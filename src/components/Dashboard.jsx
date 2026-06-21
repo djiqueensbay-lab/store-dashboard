@@ -56,6 +56,14 @@ function seedRandom(d, h) {
   return x - Math.floor(x)
 }
 
+function classifyProductType(product) {
+  const p = (product || '').toUpperCase()
+  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b/.test(p) ||
+      /\bDJI\s+AIR\b/.test(p)) return 'Drone'
+  if (/\bOSMO\b|\bRS\s*[C234]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b/.test(p)) return 'Handheld'
+  return 'Other'
+}
+
 function generateDemoData(seed = 0) {
   const rows = []
   const categories = ['DJI PRODUCT', 'DJI ACCESSORIES', 'REPAIR', 'TRADE-IN']
@@ -165,11 +173,12 @@ function processData(rows, meta = {}) {
   const normalized = rows.map(normalizeRow).filter(r => r.date)
   const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}
   const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0))
-  const categoryRev = {}, productRev = {}, productOrders = {}
-  const salesmanRev = {}, salesmanOrders = {}
+  const categoryRev = {}, productRev = {}, productOrders = {}, productUnitsSold = {}
+  const productTypeRev = {}, productTypeOrders = {}
+  const salesmanRev = {}, salesmanOrders = {}, salesmanProducts = {}
   const paymentRev = {}, paymentCount = {}
   const brandRev = {}, brandOrders = {}
-  const genderCount = {}, ageCount = {}
+  const genderCount = {}, ageOrders = {}
   let totalDiscount = 0, totalRSP = 0, totalRevenue = 0, totalOrders = 0
   let grossRevenue = 0, returnRevenue = 0, returnCount = 0
 
@@ -188,8 +197,16 @@ function processData(rows, meta = {}) {
     categoryRev[category] = (categoryRev[category] || 0) + revenue
     productRev[product] = (productRev[product] || 0) + revenue
     productOrders[product] = (productOrders[product] || 0) + orders
+    if (!isReturn) productUnitsSold[product] = (productUnitsSold[product] || 0) + Math.abs(orders)
+    const pType = classifyProductType(product)
+    productTypeRev[pType] = (productTypeRev[pType] || 0) + revenue
+    productTypeOrders[pType] = (productTypeOrders[pType] || 0) + Math.abs(orders)
     salesmanRev[salesman] = (salesmanRev[salesman] || 0) + revenue
     salesmanOrders[salesman] = (salesmanOrders[salesman] || 0) + orders
+    if (!isReturn) {
+      if (!salesmanProducts[salesman]) salesmanProducts[salesman] = {}
+      salesmanProducts[salesman][product] = (salesmanProducts[salesman][product] || 0) + Math.abs(orders)
+    }
     if (!isReturn) {
       paymentRev[payment] = (paymentRev[payment] || 0) + revenue
       paymentCount[payment] = (paymentCount[payment] || 0) + orders
@@ -197,7 +214,7 @@ function processData(rows, meta = {}) {
     brandRev[brand] = (brandRev[brand] || 0) + revenue
     brandOrders[brand] = (brandOrders[brand] || 0) + orders
     genderCount[gender] = (genderCount[gender] || 0) + 1
-    ageCount[age_group] = (ageCount[age_group] || 0) + 1
+    ageOrders[age_group] = (ageOrders[age_group] || 0) + Math.abs(orders)
     totalDiscount += discount
     totalRSP += rsp * Math.abs(orders)
     totalRevenue += revenue
@@ -233,12 +250,24 @@ function processData(rows, meta = {}) {
   const returnRate = (totalOrders + returnCount) > 0 ? returnCount / (totalOrders + returnCount) * 100 : 0
 
   const categories = Object.entries(categoryRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue) }))
+  const productTypes = ['Drone', 'Handheld', 'Other']
+    .map(name => ({ name, revenue: Math.round(productTypeRev[name] || 0), orders: productTypeOrders[name] || 0 }))
+    .filter(p => p.revenue > 0)
   const topProducts = Object.entries(productRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: productOrders[name] || 0 }))
-  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0 }))
+  const allProducts = Object.entries(productUnitsSold).sort((a, b) => b[1] - a[1]).map(([name, units]) => ({ name, units, revenue: Math.round(productRev[name] || 0) }))
+  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({
+    name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0,
+    products: Object.entries(salesmanProducts[name] || {}).sort((a, b) => b[1] - a[1]).map(([product, units]) => ({ product, units })),
+  }))
   const payments = Object.entries(paymentRev).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), count: paymentCount[name] || 0 }))
   const brands = Object.entries(brandRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: brandOrders[name] || 0 }))
   const genders = Object.entries(genderCount).map(([name, value]) => ({ name, value }))
-  const ageGroups = Object.entries(ageCount).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }))
+  const ageGroups = Object.entries(ageOrders)
+    .sort((a, b) => {
+      const order = ['Below 20', '20-29', '30-39', '40-49', '50 & Above']
+      return order.indexOf(a[0]) - order.indexOf(b[0])
+    })
+    .map(([name, value]) => ({ name, value }))
   const dowTotals = heatmap.map((row, d) => ({ day: DAYS[d], value: row.reduce((a, b) => a + b, 0) }))
 
   // Peak hour+day: single busiest heatmap cell
@@ -266,7 +295,7 @@ function processData(rows, meta = {}) {
 
   return {
     trend, totalRevenue, totalOrders, aov, growth, totalDiscount, rspGap,
-    categories, topProducts, salesmen, payments, brands, genders, ageGroups,
+    categories, productTypes, topProducts, allProducts, salesmen, payments, brands, genders, ageGroups,
     heatmap, dowTotals, peakHour: peakH, peakDay: peakD, slowHour: slowH, slowDay: slowD,
     weekendRatio, busiestDay, meta, grossRevenue, returnRevenue, returnCount, returnRate,
     momCurrent, momPrev, momChange, momCurrentLabel, momPrevLabel, monthlyBreakdown,
@@ -325,6 +354,7 @@ function exportCSV(data, fileName) {
 
 const TT = { background: T.TOOLTIP_BG, border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, color: '#f9fafb', fontSize: 12, padding: '8px 12px' }
 const TC = false // disable hover cursor rectangle on bar charts
+const TS = { itemStyle: { color: '#f9fafb' }, labelStyle: { color: '#d1d5db' } }
 
 function KPI({ icon, label, value, delta, color, small }) {
   return (
@@ -430,6 +460,10 @@ export default function Dashboard() {
   const [productSearch, setProductSearch] = useState('')
   const [targets, setTargets] = useState({})
   const [editingTargets, setEditingTargets] = useState(false)
+  const [allProductSearch, setAllProductSearch] = useState('')
+  const [selectedSalesman, setSelectedSalesman] = useState(null)
+  const [salesmanSearch, setSalesmanSearch] = useState('')
+  const [salesmanProductSearch, setSalesmanProductSearch] = useState('')
   const fileRef = useRef()
   const compareFileRef = useRef()
 
@@ -463,7 +497,7 @@ export default function Dashboard() {
 
   const resetAll = () => {
     setData(null); setFileName(null); setCompareData(null); setCompareFileName(null)
-    setError(null); setSearch(''); setProductSearch(''); setTargets({})
+    setError(null); setSearch(''); setProductSearch(''); setAllProductSearch(''); setSelectedSalesman(null); setSalesmanSearch(''); setSalesmanProductSearch(''); setTargets({})
   }
 
   const trend = data ? (() => {
@@ -713,7 +747,7 @@ export default function Dashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.MUTED }} interval={Math.max(0, Math.floor(comparisonTrend.length / 7))} />
                       <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Line type="monotone" dataKey="storeA" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                       <Line type="monotone" dataKey="storeB" stroke={STORE_B_COLOR} strokeWidth={2} dot={false} activeDot={{ r: 4 }} strokeDasharray="5 3" />
                     </LineChart>
@@ -727,7 +761,7 @@ export default function Dashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} />
                       <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -759,7 +793,7 @@ export default function Dashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
                       <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -846,7 +880,7 @@ export default function Dashboard() {
                   <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: T.MUTED }} interval={Math.max(0, Math.floor(trend.length / 7))} />
                   <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                  <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                  <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                   <Line type="monotone" dataKey="revenue" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -924,7 +958,7 @@ export default function Dashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
                       <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -933,7 +967,7 @@ export default function Dashboard() {
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
                       <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                       <Bar dataKey="revenue" radius={[4,4,0,0]}>
                         {data.monthlyBreakdown.map((m, i) => (
                           <Cell key={i} fill={m.key === data.momCurrentLabel ? BLUE : '#bfdbfe'} />
@@ -957,18 +991,32 @@ export default function Dashboard() {
 
             {/* Category + Products */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginTop: 12 }}>
-              <Card title="Sales by category">
+              <Card title="Sales by product type">
                 <ResponsiveContainer width="100%" height={190}>
-                  <BarChart data={data.categories} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                  <BarChart data={data.productTypes} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} />
+                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
                     <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
+                      formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
                     <Bar dataKey="revenue" radius={[4,4,0,0]}>
-                      {data.categories.map((_, i) => <Cell key={i} fill={i === 0 ? BLUE : '#bfdbfe'} />)}
+                      {data.productTypes.map((pt, i) => (
+                        <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
+                      ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                  {[{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
+                    const pt = data.productTypes.find(p => p.name === t.name)
+                    return pt ? (
+                      <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                        <div style={{ width: 8, height: 8, borderRadius: 2, background: t.color }} />
+                        {t.name} · {fmtNum(pt.orders)} units
+                      </div>
+                    ) : null
+                  })}
+                </div>
               </Card>
 
               <Card
@@ -1076,7 +1124,7 @@ export default function Dashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} horizontal={false} />
                     <XAxis type="number" tick={{ fontSize: 10, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
                     <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} width={80} tickFormatter={v => v.length > 16 ? v.slice(0, 14) + '…' : v} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                     <Bar dataKey="revenue" radius={[0,4,4,0]}>
                       {data.payments.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                     </Bar>
@@ -1093,49 +1141,116 @@ export default function Dashboard() {
               </Card>
             </div>
 
-            {/* Brand + Customer */}
-            <SectionLabel>Brand & customer insights</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-              <Card title="Brand performance">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {data.brands.map((b, i) => (
-                    <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <span style={{ fontSize: 12, color: T.TEXT }}>{b.name || 'Unbranded'}</span>
-                        <span style={{ fontSize: 11, color: T.MUTED }}>{fmtMYR(b.revenue)}</span>
+            {/* Product Count */}
+            <SectionLabel>Product count</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+
+              {/* Left: all products */}
+              <Card
+                title={`All products · ${data.allProducts.length} items`}
+                action={
+                  <input
+                    placeholder="Search product..."
+                    value={allProductSearch}
+                    onChange={e => setAllProductSearch(e.target.value)}
+                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', width: 140 }}
+                  />
+                }
+              >
+                {(() => {
+                  const filtered = allProductSearch
+                    ? data.allProducts.filter(p => p.name.toLowerCase().includes(allProductSearch.toLowerCase()))
+                    : data.allProducts
+                  const maxUnits = data.allProducts[0]?.units || 1
+                  return (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto', paddingRight: 2 }}>
+                        {filtered.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '1rem 0' }}>No products found</p>}
+                        {filtered.map((p, i) => (
+                          <div key={i}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                              <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.name}</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS[i % COLORS.length], flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
+                            </div>
+                            <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                              <div style={{ background: COLORS[i % COLORS.length], height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div style={{ background: '#e5e7eb', borderRadius: 4, height: 5 }}>
-                        <div style={{ background: COLORS[i % COLORS.length], height: '100%', borderRadius: 4, width: `${data.brands[0] ? Math.round(b.revenue / data.brands[0].revenue * 100) : 0}%` }} />
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.BORDER}`, display: 'flex', gap: 16 }}>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Showing <strong style={{ color: T.TEXT }}>{filtered.length}</strong> of <strong style={{ color: T.TEXT }}>{data.allProducts.length}</strong></span>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Total: <strong style={{ color: T.TEXT }}>{fmtNum(data.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
                       </div>
-                    </div>
+                    </>
+                  )
+                })()}
+              </Card>
+
+              {/* Right: by salesman */}
+              <Card title="By salesman">
+                {/* Salesman search + picker */}
+                <input
+                  placeholder="Search salesman..."
+                  value={salesmanSearch}
+                  onChange={e => { setSalesmanSearch(e.target.value); setSelectedSalesman(null) }}
+                  style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
+                />
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+                  {data.salesmen.filter(s => !salesmanSearch || s.name.toLowerCase().includes(salesmanSearch.toLowerCase())).map((s, i) => (
+                    <button key={i} onClick={() => { setSelectedSalesman(selectedSalesman === s.name ? null : s.name); setSalesmanProductSearch('') }}
+                      style={{
+                        fontSize: 11, padding: '4px 12px', borderRadius: 20, cursor: 'pointer', border: `1px solid ${selectedSalesman === s.name ? COLORS[i % COLORS.length] : T.BORDER_STRONG}`,
+                        background: selectedSalesman === s.name ? COLORS[i % COLORS.length] : T.BG,
+                        color: selectedSalesman === s.name ? '#fff' : T.MUTED,
+                        fontWeight: selectedSalesman === s.name ? 600 : 400,
+                        transition: 'all 0.15s',
+                      }}>
+                      {s.name}
+                    </button>
                   ))}
                 </div>
-              </Card>
 
-              <Card title="Customer gender">
-                <ResponsiveContainer width="100%" height={160}>
-                  <PieChart>
-                    <Pie data={data.genders} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-                      {data.genders.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " />
-                  </PieChart>
-                </ResponsiveContainer>
-              </Card>
-
-              <Card title="Customer age group">
-                <ResponsiveContainer width="100%" height={160}>
-                  <BarChart data={data.ageGroups} margin={{ top: 0, right: 4, bottom: 30, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: T.MUTED }} angle={-30} textAnchor="end" />
-                    <YAxis tick={{ fontSize: 10, fill: T.MUTED }} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {data.ageGroups.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+                {/* Product breakdown for selected salesman */}
+                {(() => {
+                  const sm = data.salesmen.find(s => s.name === selectedSalesman)
+                  if (!selectedSalesman || !sm) return (
+                    <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '2rem 0' }}>Select a salesman to see their product breakdown</p>
+                  )
+                  const filteredProds = salesmanProductSearch
+                    ? sm.products.filter(p => p.product.toLowerCase().includes(salesmanProductSearch.toLowerCase()))
+                    : sm.products
+                  const maxUnits = sm.products[0]?.units || 1
+                  return (
+                    <>
+                      <div style={{ display: 'flex', gap: 12, marginBottom: 10, padding: '8px 10px', background: T.BG, borderRadius: 8 }}>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Orders: <strong style={{ color: T.TEXT }}>{fmtNum(sm.orders)}</strong></span>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Revenue: <strong style={{ color: BLUE }}>{fmtMYR(sm.revenue)}</strong></span>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Products: <strong style={{ color: T.TEXT }}>{sm.products.length}</strong></span>
+                      </div>
+                      <input
+                        placeholder="Search product..."
+                        value={salesmanProductSearch}
+                        onChange={e => setSalesmanProductSearch(e.target.value)}
+                        style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
+                      />
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
+                        {filteredProds.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '0.5rem 0' }}>No products found</p>}
+                        {filteredProds.map((p, j) => (
+                          <div key={j}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                              <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.product}</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS[j % COLORS.length], flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
+                            </div>
+                            <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                              <div style={{ background: COLORS[j % COLORS.length], height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )
+                })()}
               </Card>
             </div>
 
@@ -1190,7 +1305,7 @@ export default function Dashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                     <XAxis dataKey="day" tick={{ fontSize: 12, fill: T.MUTED }} />
                     <YAxis tick={{ fontSize: 11, fill: T.MUTED }} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
                     <Bar dataKey="value" radius={[4,4,0,0]}>
                       {data.dowTotals.map((d, i) => <Cell key={i} fill={d.value === dowMax ? BLUE : '#bfdbfe'} />)}
                     </Bar>
