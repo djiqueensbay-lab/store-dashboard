@@ -365,131 +365,260 @@ function exportPDF(data, compareData, nameA, nameB, period) {
   const periodLabel = period === '7d' ? 'Last 7 days' : period === '30d' ? 'Last 30 days' : 'All time'
   const fmtR = n => 'RM' + Math.abs(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const fmtN = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n).toString()
+  const genDate = new Date().toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' })
 
-  function storeSection(d, label, color) {
-    const rows = d.salesmen.map(s =>
-      `<tr><td>${s.name}</td><td>${fmtR(s.revenue)}</td><td>${fmtN(s.orders)}</td><td>${s.products.length}</td></tr>`
-    ).join('')
-    const prodRows = d.topProducts.map(p =>
-      `<tr><td>${p.name}</td><td>${fmtR(p.revenue)}</td><td>${fmtN(p.orders)}</td></tr>`
-    ).join('')
-    const payRows = d.payments.map(p =>
-      `<tr><td>${p.name}</td><td>${fmtR(p.revenue)}</td><td>${fmtN(p.count)}</td></tr>`
-    ).join('')
-    const monthRows = d.monthlyBreakdown.map(m =>
-      `<tr><td>${m.label}</td><td>${fmtR(m.revenue)}</td></tr>`
-    ).join('')
-    return `
-      <div class="store-header" style="border-left:4px solid ${color};padding-left:12px;margin:24px 0 16px">
-        <h2 style="margin:0;font-size:16px;color:${color}">${label}</h2>
-        <span class="muted" style="font-size:12px">${d.meta?.outlet || ''} · ${periodLabel}</span>
-      </div>
-      <div class="kpi-grid">
-        ${[
-          ['Net Revenue', fmtR(d.totalRevenue), color],
-          ['Gross Revenue', fmtR(d.grossRevenue), '#111'],
-          ['Return Revenue', fmtR(d.returnRevenue), '#dc2626'],
-          ['Total Orders', fmtN(d.totalOrders), '#111'],
-          ['Return Rate', d.returnRate.toFixed(1) + '%', d.returnRate < 5 ? '#059669' : '#dc2626'],
-          ['Avg Order Value', fmtR(d.aov), '#111'],
-          ['Total Discount', fmtR(d.totalDiscount), '#d97706'],
-          ['RSP Gap', fmtR(d.rspGap), '#dc2626'],
-          ['MoM Change', (d.momChange >= 0 ? '+' : '') + d.momChange.toFixed(1) + '%', d.momChange >= 0 ? '#059669' : '#dc2626'],
-        ].map(([lbl, val, c]) => `<div class="kpi-box"><div class="kpi-label">${lbl}</div><div class="kpi-value" style="color:${c}">${val}</div></div>`).join('')}
-      </div>
-      <h3>Salesman Performance</h3>
-      <table><thead><tr><th>Salesman</th><th>Revenue</th><th>Orders</th><th>Products</th></tr></thead><tbody>${rows}</tbody></table>
-      <h3>Top Products</h3>
-      <table><thead><tr><th>Product</th><th>Revenue</th><th>Orders</th></tr></thead><tbody>${prodRows}</tbody></table>
-      <h3>Payment Methods</h3>
-      <table><thead><tr><th>Method</th><th>Revenue</th><th>Count</th></tr></thead><tbody>${payRows}</tbody></table>
-      <h3>Monthly Breakdown</h3>
-      <table><thead><tr><th>Month</th><th>Revenue</th></tr></thead><tbody>${monthRows}</tbody></table>
-    `
-  }
+  const css = `
+    @page { size: A4; margin: 14mm 16mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #111827; font-size: 10pt; line-height: 1.45; background: #fff; }
 
-  const compSection = compareData ? (() => {
+    /* ── Page header (repeats on every page) ── */
+    .page-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 6mm; border-bottom: 2.5pt solid #2563eb; margin-bottom: 6mm; }
+    .brand { font-size: 17pt; font-weight: 800; color: #2563eb; letter-spacing: -0.02em; }
+    .brand span { font-size: 10pt; font-weight: 400; color: #6b7280; margin-left: 8px; }
+    .store-pill { font-size: 9pt; font-weight: 600; padding: 3px 10px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; }
+    .pill-a { background: #eff6ff; color: #2563eb; border: 1pt solid #bfdbfe; }
+    .pill-b { background: #f5f3ff; color: #7c3aed; border: 1pt solid #ddd6fe; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+    /* ── Section heading ── */
+    .section { margin-top: 6mm; }
+    .section-title { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #9ca3af; border-bottom: 0.75pt solid #e5e7eb; padding-bottom: 2mm; margin-bottom: 3.5mm; }
+
+    /* ── KPI grid ── */
+    .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin-bottom: 4mm; }
+    .kpi { border: 0.75pt solid #e5e7eb; border-radius: 5pt; padding: 3mm 4mm; background: #fafafa; }
+    .kpi-label { font-size: 7.5pt; color: #6b7280; margin-bottom: 2px; }
+    .kpi-value { font-size: 14pt; font-weight: 700; line-height: 1.2; }
+    .kpi-delta { font-size: 7.5pt; color: #9ca3af; margin-top: 2px; }
+
+    /* ── Two-column layout ── */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4mm; }
+
+    /* ── Tables ── */
+    table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+    thead tr { background: #f4f6fb; }
+    th { padding: 2.5mm 3mm; text-align: left; font-size: 8pt; font-weight: 700; color: #374151; border-bottom: 1.5pt solid #e5e7eb; white-space: nowrap; }
+    td { padding: 2mm 3mm; border-bottom: 0.5pt solid #f1f5f9; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: none; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .bold { font-weight: 700; }
+    .blue { color: #2563eb; }
+    .purple { color: #7c3aed; }
+    .green { color: #059669; }
+    .red { color: #dc2626; }
+    .amber { color: #d97706; }
+    .muted { color: #6b7280; }
+
+    /* ── Delta badge ── */
+    .badge { display: inline-block; padding: 1px 5px; border-radius: 10px; font-size: 7.5pt; font-weight: 700; }
+    .badge-green { background: #dcfce7; color: #16a34a; }
+    .badge-red { background: #fef2f2; color: #dc2626; }
+
+    /* ── Page break ── */
+    .page-break { page-break-before: always; padding-top: 0; }
+
+    /* ── Footer ── */
+    .footer { margin-top: 8mm; padding-top: 3mm; border-top: 0.5pt solid #e5e7eb; display: flex; justify-content: space-between; font-size: 7.5pt; color: #9ca3af; }
+
+    /* ── Store divider ── */
+    .store-divider { border-left: 3pt solid; padding-left: 4mm; margin: 5mm 0 3mm; }
+    .divider-a { border-color: #2563eb; }
+    .divider-b { border-color: #7c3aed; }
+    .divider-title { font-size: 12pt; font-weight: 700; }
+    .divider-sub { font-size: 8.5pt; color: #6b7280; margin-top: 2px; }
+  `
+
+  const kpiGrid = (d, color) => [
+    ['Net Revenue', fmtR(d.totalRevenue), color, `${d.growth >= 0 ? '+' : ''}${d.growth.toFixed(1)}% period trend`],
+    ['Gross Revenue', fmtR(d.grossRevenue), '#111827', 'before returns'],
+    ['Return Revenue', fmtR(d.returnRevenue), '#dc2626', `${d.returnCount} transactions`],
+    ['Total Orders', fmtN(d.totalOrders), '#111827', 'units sold'],
+    ['Return Rate', d.returnRate.toFixed(1) + '%', d.returnRate < 5 ? '#059669' : '#dc2626', d.returnRate < 5 ? 'Healthy' : 'Monitor'],
+    ['Avg Order Value', fmtR(d.aov), '#111827', 'per transaction'],
+    ['Total Discount', fmtR(d.totalDiscount), '#d97706', `${d.totalRevenue > 0 ? ((d.totalDiscount / (d.totalRevenue + d.totalDiscount)) * 100).toFixed(1) : 0}% of gross`],
+    ['RSP Gap', fmtR(d.rspGap), '#dc2626', 'below RSP'],
+    ['MoM Change', (d.momChange >= 0 ? '+' : '') + d.momChange.toFixed(1) + '%', d.momChange >= 0 ? '#059669' : '#dc2626', `${d.momPrevLabel ? d.momPrevLabel + ' → ' + d.momCurrentLabel : 'current month'}`],
+  ].map(([lbl, val, c, delta]) =>
+    `<div class="kpi"><div class="kpi-label">${lbl}</div><div class="kpi-value" style="color:${c}">${val}</div><div class="kpi-delta">${delta}</div></div>`
+  ).join('')
+
+  const salesTable = (d, color) =>
+    `<table><thead><tr><th>#</th><th>Salesman</th><th class="num">Revenue</th><th class="num">Orders</th><th class="num">Products</th></tr></thead><tbody>
+    ${d.salesmen.map((s, i) => `<tr><td class="muted">${i + 1}</td><td class="${i === 0 ? 'bold' : ''}">${s.name}</td><td class="num ${i === 0 ? 'bold' : ''}" style="color:${i === 0 ? color : '#111827'}">${fmtR(s.revenue)}</td><td class="num muted">${fmtN(s.orders)}</td><td class="num muted">${s.products.length}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const prodTable = (d) =>
+    `<table><thead><tr><th>#</th><th>Product</th><th class="num">Revenue</th><th class="num">Orders</th></tr></thead><tbody>
+    ${d.topProducts.slice(0, 8).map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.orders)}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const payTable = (d) =>
+    `<table><thead><tr><th>Method</th><th class="num">Revenue</th><th class="num">Transactions</th></tr></thead><tbody>
+    ${d.payments.map(p => `<tr><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.count)}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const monthTable = (d) =>
+    `<table><thead><tr><th>Month</th><th class="num">Revenue</th></tr></thead><tbody>
+    ${d.monthlyBreakdown.map((m, i, arr) => {
+      const isCurrent = m.key === d.momCurrentLabel
+      return `<tr><td${isCurrent ? ' class="bold"' : ''}>${m.label}${isCurrent ? ' ✦' : ''}</td><td class="num${isCurrent ? ' bold blue' : ''}">${fmtR(m.revenue)}</td></tr>`
+    }).join('')}
+    </tbody></table>`
+
+  const pageHeader = () => `
+    <div class="page-header">
+      <div>
+        <div class="brand">StoreDash <span>Sales Report</span></div>
+        <div style="font-size:8.5pt;color:#6b7280;margin-top:3px">Period: <strong>${periodLabel}</strong> · Generated: ${genDate}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span class="store-pill pill-a"><span class="dot" style="background:#2563eb"></span>${nameA}</span>
+        ${compareData ? `<span style="font-size:9pt;color:#9ca3af">vs</span><span class="store-pill pill-b"><span class="dot" style="background:#7c3aed"></span>${nameB}</span>` : ''}
+      </div>
+    </div>`
+
+  const footer = (page, total) => `
+    <div class="footer">
+      <span>StoreDash · Confidential</span>
+      <span>Page ${page} of ${total}</span>
+    </div>`
+
+  const totalPages = compareData ? 4 : 2
+
+  // Page 1: KPIs + Summary
+  const page1 = `
+    ${pageHeader()}
+    <div class="store-divider divider-a">
+      <div class="divider-title" style="color:#2563eb">${nameA}</div>
+      <div class="divider-sub">${data.meta?.outlet || ''} · ${data.meta?.period || periodLabel}</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Performance Summary</div>
+      <div class="kpi-grid">${kpiGrid(data, '#2563eb')}</div>
+    </div>
+    <div class="two-col" style="margin-top:5mm">
+      <div class="section">
+        <div class="section-title">Monthly Breakdown</div>
+        ${monthTable(data)}
+      </div>
+      <div class="section">
+        <div class="section-title">Payment Methods</div>
+        ${payTable(data)}
+      </div>
+    </div>
+    ${footer(1, totalPages)}`
+
+  // Page 2: Products + Staff
+  const page2 = `
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-a">
+      <div class="divider-title" style="color:#2563eb">${nameA}</div>
+    </div>
+    <div class="two-col" style="margin-top:4mm">
+      <div class="section">
+        <div class="section-title">Salesman Performance</div>
+        ${salesTable(data, '#2563eb')}
+      </div>
+      <div class="section">
+        <div class="section-title">Top Products</div>
+        ${prodTable(data)}
+      </div>
+    </div>
+    ${footer(2, totalPages)}
+    </div>`
+
+  // Page 3 (compare only): Store B KPIs + Monthly + Payments
+  const page3 = compareData ? `
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-b">
+      <div class="divider-title" style="color:#7c3aed">${nameB}</div>
+      <div class="divider-sub">${compareData.meta?.outlet || ''} · ${compareData.meta?.period || periodLabel}</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Performance Summary</div>
+      <div class="kpi-grid">${kpiGrid(compareData, '#7c3aed')}</div>
+    </div>
+    <div class="two-col" style="margin-top:5mm">
+      <div class="section">
+        <div class="section-title">Monthly Breakdown</div>
+        ${monthTable(compareData)}
+      </div>
+      <div class="section">
+        <div class="section-title">Payment Methods</div>
+        ${payTable(compareData)}
+      </div>
+    </div>
+    ${footer(3, totalPages)}
+    </div>` : ''
+
+  // Page 4 (compare only): Store B Staff + Comparison table
+  const page4 = compareData ? (() => {
     const metrics = [
-      ['Net Revenue', fmtR(data.totalRevenue), fmtR(compareData.totalRevenue)],
-      ['Total Orders', fmtN(data.totalOrders), fmtN(compareData.totalOrders)],
-      ['Avg Order Value', fmtR(data.aov), fmtR(compareData.aov)],
-      ['Return Rate', data.returnRate.toFixed(1) + '%', compareData.returnRate.toFixed(1) + '%'],
-      ['Total Discount', fmtR(data.totalDiscount), fmtR(compareData.totalDiscount)],
-      ['MoM Change', (data.momChange >= 0 ? '+' : '') + data.momChange.toFixed(1) + '%', (compareData.momChange >= 0 ? '+' : '') + compareData.momChange.toFixed(1) + '%'],
+      ['Net Revenue', data.totalRevenue, compareData.totalRevenue, fmtR],
+      ['Gross Revenue', data.grossRevenue, compareData.grossRevenue, fmtR],
+      ['Return Revenue', data.returnRevenue, compareData.returnRevenue, fmtR],
+      ['Total Orders', data.totalOrders, compareData.totalOrders, fmtN],
+      ['Avg Order Value', data.aov, compareData.aov, fmtR],
+      ['Return Rate (%)', data.returnRate, compareData.returnRate, v => v.toFixed(1) + '%'],
+      ['Total Discount', data.totalDiscount, compareData.totalDiscount, fmtR],
+      ['RSP Gap', data.rspGap, compareData.rspGap, fmtR],
+      ['MoM Change (%)', data.momChange, compareData.momChange, v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'],
     ]
+    const compRows = metrics.map(([lbl, a, b, fmt]) => {
+      const delta = b !== 0 ? ((a - b) / Math.abs(b)) * 100 : 0
+      const cls = delta >= 0 ? 'badge-green' : 'badge-red'
+      return `<tr><td>${lbl}</td><td class="num blue bold">${fmt(a)}</td><td class="num purple bold">${fmt(b)}</td><td class="num"><span class="badge ${cls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</span></td></tr>`
+    }).join('')
     return `
-      <div style="page-break-before:always">
-        <h2 style="color:#111;margin:0 0 12px">Store Comparison</h2>
-        <table>
-          <thead><tr><th>Metric</th><th style="color:#2563eb">${nameA}</th><th style="color:#7c3aed">${nameB}</th><th>Δ A vs B</th></tr></thead>
-          <tbody>
-            ${metrics.map(([lbl, a, b]) => {
-              const numA = parseFloat(a.replace(/[^0-9.-]/g, ''))
-              const numB = parseFloat(b.replace(/[^0-9.-]/g, ''))
-              const delta = numB > 0 ? ((numA - numB) / numB * 100) : 0
-              const dc = delta >= 0 ? '#059669' : '#dc2626'
-              return `<tr><td>${lbl}</td><td>${a}</td><td>${b}</td><td style="color:${dc};font-weight:600">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</td></tr>`
-            }).join('')}
-          </tbody>
-        </table>
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-b">
+      <div class="divider-title" style="color:#7c3aed">${nameB}</div>
+    </div>
+    <div class="two-col" style="margin-top:4mm">
+      <div class="section">
+        <div class="section-title">Salesman Performance</div>
+        ${salesTable(compareData, '#7c3aed')}
       </div>
-    `
+      <div class="section">
+        <div class="section-title">Top Products</div>
+        ${prodTable(compareData)}
+      </div>
+    </div>
+    <div class="section" style="margin-top:6mm">
+      <div class="section-title">Side-by-side Comparison — ${nameA} vs ${nameB}</div>
+      <table>
+        <thead><tr><th>Metric</th><th class="num" style="color:#2563eb">${nameA}</th><th class="num" style="color:#7c3aed">${nameB}</th><th class="num">A vs B</th></tr></thead>
+        <tbody>${compRows}</tbody>
+      </table>
+    </div>
+    ${footer(4, totalPages)}
+    </div>`
   })() : ''
 
   const html = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>StoreDash Report — ${nameA}${compareData ? ' vs ' + nameB : ''}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; margin: 32px 40px; color: #111827; font-size: 13px; line-height: 1.5; }
-  h1 { font-size: 22px; color: #2563eb; margin: 0 0 4px; }
-  h2 { font-size: 14px; color: #374151; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; margin: 20px 0 10px; }
-  h3 { font-size: 12px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin: 18px 0 6px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
-  th { text-align: left; padding: 6px 8px; background: #f4f6fb; font-weight: 600; border-bottom: 2px solid #e5e7eb; font-size: 11px; }
-  td { padding: 5px 8px; border-bottom: 1px solid #f1f5f9; font-size: 12px; }
-  tr:hover td { background: #f9fafb; }
-  .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
-  .kpi-box { padding: 10px 12px; border: 1px solid #e5e7eb; border-radius: 8px; }
-  .kpi-label { font-size: 10px; color: #6b7280; margin-bottom: 2px; }
-  .kpi-value { font-size: 17px; font-weight: 700; }
-  .muted { color: #6b7280; }
-  .header-bar { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 2px solid #2563eb; }
-  .no-print { display: none; }
-  @media print {
-    body { margin: 16px 20px; }
-    .page-break { page-break-before: always; }
-  }
-</style>
+<title>StoreDash Report — ${nameA}${compareData ? ' vs ' + nameB : ''} — ${genDate}</title>
+<style>${css}</style>
 </head>
 <body>
-  <div class="header-bar">
-    <div>
-      <h1>📊 StoreDash Report</h1>
-      <div class="muted" style="font-size:12px">Period: ${periodLabel} · Generated: ${new Date().toLocaleDateString('en-MY')}</div>
-    </div>
-    <div style="text-align:right">
-      <div style="font-size:13px;font-weight:600;color:#2563eb">${data.meta?.outlet || nameA}</div>
-      ${compareData ? `<div style="font-size:13px;font-weight:600;color:#7c3aed">vs ${compareData.meta?.outlet || nameB}</div>` : ''}
-    </div>
-  </div>
-
-  ${storeSection(data, nameA, '#2563eb')}
-  ${compareData ? `<div class="page-break"></div>${storeSection(compareData, nameB, '#7c3aed')}` : ''}
-  ${compSection}
-
-  <p class="muted" style="font-size:10px;margin-top:32px;border-top:1px solid #e5e7eb;padding-top:8px">
-    StoreDash · Generated ${new Date().toLocaleString('en-MY')}
-  </p>
+${page1}
+${page2}
+${page3}
+${page4}
 </body>
 </html>`
 
   const w = window.open('', '_blank')
   w.document.write(html)
   w.document.close()
-  setTimeout(() => w.print(), 500)
+  setTimeout(() => w.print(), 600)
 }
 
 const TT = { background: T.TOOLTIP_BG, border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, color: '#f9fafb', fontSize: 12, padding: '8px 12px' }
@@ -613,6 +742,7 @@ export default function Dashboard() {
   const [salesmanProductSearch, setSalesmanProductSearch] = useState('')
   const [heatView, setHeatView] = useState('a')
   const [staffView, setStaffView] = useState('a')
+  const [prodCountView, setProdCountView] = useState('a')
   const [draggingB, setDraggingB] = useState(false)
   const fileRef = useRef()
   const compareFileRef = useRef()
@@ -699,6 +829,17 @@ export default function Dashboard() {
 
   const nameA = data?.meta?.outlet || 'Store A'
   const nameB = compareData?.meta?.outlet || 'Store B'
+
+  const allProductsComparison = (() => {
+    if (!data || !compareData) return null
+    const aMap = {}, bMap = {}
+    data.allProducts.forEach(p => { aMap[p.name] = p.units })
+    compareData.allProducts.forEach(p => { bMap[p.name] = p.units })
+    const names = [...new Set([...Object.keys(aMap), ...Object.keys(bMap)])]
+    return names
+      .map(name => ({ name, unitsA: aMap[name] || 0, unitsB: bMap[name] || 0 }))
+      .sort((a, b) => (b.unitsA + b.unitsB) - (a.unitsA + a.unitsB))
+  })()
 
   return (
     <div style={{ minHeight: '100vh', background: T.BG, color: T.TEXT, fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -1374,19 +1515,67 @@ export default function Dashboard() {
             <SectionLabel>Product count</SectionLabel>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
 
-              {/* Left: all products */}
+              {/* Left: all products — comparison-aware */}
               <Card
-                title={`All products · ${data.allProducts.length} items`}
+                title={allProductsComparison
+                  ? `All products · ${nameA} vs ${nameB}`
+                  : `All products · ${data.allProducts.length} items`}
                 action={
                   <input
                     placeholder="Search product..."
                     value={allProductSearch}
                     onChange={e => setAllProductSearch(e.target.value)}
-                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', width: 140 }}
+                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', width: 130 }}
                   />
                 }
               >
                 {(() => {
+                  if (allProductsComparison) {
+                    // Comparison view: side-by-side bars per product
+                    const filtered = allProductSearch
+                      ? allProductsComparison.filter(p => p.name.toLowerCase().includes(allProductSearch.toLowerCase()))
+                      : allProductsComparison
+                    const maxUnits = Math.max(...allProductsComparison.map(p => Math.max(p.unitsA, p.unitsB)), 1)
+                    return (
+                      <>
+                        <div style={{ display: 'flex', gap: 14, marginBottom: 10 }}>
+                          {[{ color: BLUE, name: nameA }, { color: STORE_B_COLOR, name: nameB }].map(s => (
+                            <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                              <div style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />{s.name}
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
+                          {filtered.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '1rem 0' }}>No products found</p>}
+                          {filtered.map((p, i) => (
+                            <div key={i}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>{p.name}</span>
+                                <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: BLUE }}>{fmtNum(p.unitsA)}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: STORE_B_COLOR }}>{fmtNum(p.unitsB)}</span>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <div style={{ background: '#e5e7eb', borderRadius: 3, height: 4 }}>
+                                  <div style={{ background: BLUE, height: '100%', borderRadius: 3, width: `${Math.round(p.unitsA / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                </div>
+                                <div style={{ background: '#e5e7eb', borderRadius: 3, height: 4 }}>
+                                  <div style={{ background: STORE_B_COLOR, height: '100%', borderRadius: 3, width: `${Math.round(p.unitsB / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.BORDER}`, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, color: T.MUTED }}>Showing <strong style={{ color: T.TEXT }}>{filtered.length}</strong> products</span>
+                          <span style={{ fontSize: 11, color: BLUE }}>{nameA}: <strong>{fmtNum(data.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
+                          <span style={{ fontSize: 11, color: STORE_B_COLOR }}>{nameB}: <strong>{fmtNum(compareData.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
+                        </div>
+                      </>
+                    )
+                  }
+                  // Single-store view
                   const filtered = allProductSearch
                     ? data.allProducts.filter(p => p.name.toLowerCase().includes(allProductSearch.toLowerCase()))
                     : data.allProducts
@@ -1416,67 +1605,81 @@ export default function Dashboard() {
                 })()}
               </Card>
 
-              {/* Right: by salesman */}
-              <Card title="By salesman">
-                {/* Salesman search + picker */}
-                <input
-                  placeholder="Search salesman..."
-                  value={salesmanSearch}
-                  onChange={e => { setSalesmanSearch(e.target.value); setSelectedSalesman(null) }}
-                  style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
-                />
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
-                  {data.salesmen.filter(s => !salesmanSearch || s.name.toLowerCase().includes(salesmanSearch.toLowerCase())).map((s, i) => (
-                    <button key={i} onClick={() => { setSelectedSalesman(selectedSalesman === s.name ? null : s.name); setSalesmanProductSearch('') }}
-                      style={{
-                        fontSize: 11, padding: '4px 12px', borderRadius: 20, cursor: 'pointer', border: `1px solid ${selectedSalesman === s.name ? COLORS[i % COLORS.length] : T.BORDER_STRONG}`,
-                        background: selectedSalesman === s.name ? COLORS[i % COLORS.length] : T.BG,
-                        color: selectedSalesman === s.name ? '#fff' : T.MUTED,
-                        fontWeight: selectedSalesman === s.name ? 600 : 400,
-                        transition: 'all 0.15s',
-                      }}>
-                      {s.name}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Product breakdown for selected salesman */}
+              {/* Right: by salesman — comparison-aware */}
+              <Card
+                title="By salesman"
+                action={compareData ? (
+                  <div style={{ display: 'flex', gap: 2, background: '#e5e7eb', borderRadius: 8, padding: 2 }}>
+                    <button onClick={() => { setProdCountView('a'); setSelectedSalesman(null) }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: prodCountView === 'a' ? '#fff' : 'transparent', color: prodCountView === 'a' ? BLUE : T.MUTED, fontWeight: prodCountView === 'a' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameA}</button>
+                    <button onClick={() => { setProdCountView('b'); setSelectedSalesman(null) }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: prodCountView === 'b' ? '#fff' : 'transparent', color: prodCountView === 'b' ? STORE_B_COLOR : T.MUTED, fontWeight: prodCountView === 'b' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameB}</button>
+                  </div>
+                ) : null}
+              >
                 {(() => {
-                  const sm = data.salesmen.find(s => s.name === selectedSalesman)
-                  if (!selectedSalesman || !sm) return (
-                    <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '2rem 0' }}>Select a salesman to see their product breakdown</p>
-                  )
-                  const filteredProds = salesmanProductSearch
-                    ? sm.products.filter(p => p.product.toLowerCase().includes(salesmanProductSearch.toLowerCase()))
-                    : sm.products
-                  const maxUnits = sm.products[0]?.units || 1
+                  const pcData = (compareData && prodCountView === 'b') ? compareData : data
+                  const pcColor = (compareData && prodCountView === 'b') ? STORE_B_COLOR : BLUE
                   return (
                     <>
-                      <div style={{ display: 'flex', gap: 12, marginBottom: 10, padding: '8px 10px', background: T.BG, borderRadius: 8 }}>
-                        <span style={{ fontSize: 11, color: T.MUTED }}>Orders: <strong style={{ color: T.TEXT }}>{fmtNum(sm.orders)}</strong></span>
-                        <span style={{ fontSize: 11, color: T.MUTED }}>Revenue: <strong style={{ color: BLUE }}>{fmtMYR(sm.revenue)}</strong></span>
-                        <span style={{ fontSize: 11, color: T.MUTED }}>Products: <strong style={{ color: T.TEXT }}>{sm.products.length}</strong></span>
-                      </div>
                       <input
-                        placeholder="Search product..."
-                        value={salesmanProductSearch}
-                        onChange={e => setSalesmanProductSearch(e.target.value)}
+                        placeholder="Search salesman..."
+                        value={salesmanSearch}
+                        onChange={e => { setSalesmanSearch(e.target.value); setSelectedSalesman(null) }}
                         style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
                       />
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
-                        {filteredProds.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '0.5rem 0' }}>No products found</p>}
-                        {filteredProds.map((p, j) => (
-                          <div key={j}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                              <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.product}</span>
-                              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS[j % COLORS.length], flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
-                            </div>
-                            <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
-                              <div style={{ background: COLORS[j % COLORS.length], height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
-                            </div>
-                          </div>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+                        {pcData.salesmen.filter(s => !salesmanSearch || s.name.toLowerCase().includes(salesmanSearch.toLowerCase())).map((s, i) => (
+                          <button key={i} onClick={() => { setSelectedSalesman(selectedSalesman === s.name ? null : s.name); setSalesmanProductSearch('') }}
+                            style={{
+                              fontSize: 11, padding: '4px 12px', borderRadius: 20, cursor: 'pointer',
+                              border: `1px solid ${selectedSalesman === s.name ? pcColor : T.BORDER_STRONG}`,
+                              background: selectedSalesman === s.name ? pcColor : T.BG,
+                              color: selectedSalesman === s.name ? '#fff' : T.MUTED,
+                              fontWeight: selectedSalesman === s.name ? 600 : 400,
+                              transition: 'all 0.15s',
+                            }}>
+                            {s.name}
+                          </button>
                         ))}
                       </div>
+                      {(() => {
+                        const sm = pcData.salesmen.find(s => s.name === selectedSalesman)
+                        if (!selectedSalesman || !sm) return (
+                          <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '2rem 0' }}>Select a salesman to see their product breakdown</p>
+                        )
+                        const filteredProds = salesmanProductSearch
+                          ? sm.products.filter(p => p.product.toLowerCase().includes(salesmanProductSearch.toLowerCase()))
+                          : sm.products
+                        const maxUnits = sm.products[0]?.units || 1
+                        return (
+                          <>
+                            <div style={{ display: 'flex', gap: 12, marginBottom: 10, padding: '8px 10px', background: T.BG, borderRadius: 8 }}>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Orders: <strong style={{ color: T.TEXT }}>{fmtNum(sm.orders)}</strong></span>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Revenue: <strong style={{ color: pcColor }}>{fmtMYR(sm.revenue)}</strong></span>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Products: <strong style={{ color: T.TEXT }}>{sm.products.length}</strong></span>
+                            </div>
+                            <input
+                              placeholder="Search product..."
+                              value={salesmanProductSearch}
+                              onChange={e => setSalesmanProductSearch(e.target.value)}
+                              style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
+                              {filteredProds.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '0.5rem 0' }}>No products found</p>}
+                              {filteredProds.map((p, j) => (
+                                <div key={j}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                    <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.product}</span>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: pcColor, flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
+                                  </div>
+                                  <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                                    <div style={{ background: pcColor, height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )
+                      })()}
                     </>
                   )
                 })()}
