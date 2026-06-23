@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const BLUE = '#2563eb'
 const GREEN = '#059669'
@@ -176,16 +177,13 @@ function normalizeRow(r) {
   }
 }
 
-function processData(rows, meta = {}, period = 'all') {
+function processData(rows, meta = {}, dateRange = null) {
   const allNormalized = rows.map(normalizeRow).filter(r => r.date)
 
-  // Period filter relative to the data's own last date, not today
+  // Filter by exact date range when set
   let normalized = allNormalized
-  if (period !== 'all' && allNormalized.length > 0) {
-    const maxDateStr = allNormalized.reduce((max, r) => r.date > max ? r.date : max, allNormalized[0].date)
-    const maxTime = new Date(maxDateStr).getTime()
-    const cutoffMs = period === '7d' ? 7 * 86400000 : 30 * 86400000
-    normalized = allNormalized.filter(r => new Date(r.date).getTime() >= maxTime - cutoffMs)
+  if (dateRange?.start && dateRange?.end) {
+    normalized = allNormalized.filter(r => r.date >= dateRange.start && r.date <= dateRange.end)
   }
 
   const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}
@@ -394,8 +392,7 @@ function exportCSV(data, fileName) {
   URL.revokeObjectURL(url)
 }
 
-function exportPDF(data, compareData, nameA, nameB, period) {
-  const periodLabel = period === '7d' ? 'Last 7 days' : period === '30d' ? 'Last 30 days' : 'All time'
+function exportPDF(data, compareData, nameA, nameB, periodLabel) {
   const fmtR = n => 'RM' + Math.abs(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   const fmtN = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n).toString()
   const genDate = new Date().toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' })
@@ -682,6 +679,194 @@ function Card({ title, children, style, action }) {
   )
 }
 
+function fmtDateLabel(d) {
+  if (!d) return ''
+  const [y, m, dd] = d.split('-')
+  return `${dd}-${MONTHS_SHORT[parseInt(m) - 1]}-${y}`
+}
+
+function addDays(dateStr, n) {
+  const d = new Date(dateStr)
+  d.setDate(d.getDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+function formatRangeLabel(dateRange) {
+  if (!dateRange) return 'All time'
+  return `${fmtDateLabel(dateRange.start)} – ${fmtDateLabel(dateRange.end)}`
+}
+
+function DateRangePicker({ value, onChange, onClose }) {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const initDate = value?.start ? new Date(value.start) : new Date()
+  const [viewYear, setViewYear] = useState(initDate.getFullYear())
+  const [viewMonth, setViewMonth] = useState(initDate.getMonth())
+  const [selStart, setSelStart] = useState(value?.start ?? null)
+  const [selEnd, setSelEnd] = useState(value?.end ?? null)
+  const [picking, setPicking] = useState(false) // true = waiting for end date
+  const [hover, setHover] = useState(null)
+
+  const computedPresets = [
+    { label: 'Today', fn: () => ({ start: todayStr, end: todayStr }) },
+    { label: 'Yesterday', fn: () => { const y = addDays(todayStr, -1); return { start: y, end: y } } },
+    { label: 'Last 7 Days', fn: () => ({ start: addDays(todayStr, -6), end: todayStr }) },
+    { label: 'This Month', fn: () => {
+      const d = new Date()
+      return { start: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`, end: todayStr }
+    }},
+    { label: 'Last 3 Months', fn: () => ({ start: addDays(todayStr, -89), end: todayStr }) },
+    { label: 'Last 6 Months', fn: () => ({ start: addDays(todayStr, -179), end: todayStr }) },
+    { label: 'Last 9 Months', fn: () => ({ start: addDays(todayStr, -269), end: todayStr }) },
+    { label: 'Last 2 Years', fn: () => ({ start: addDays(todayStr, -729), end: todayStr }) },
+    { label: 'All time', fn: () => null },
+  ]
+
+  const applyPreset = (fn) => {
+    const r = fn()
+    if (!r) { setSelStart(null); setSelEnd(null); setPicking(false); return }
+    setSelStart(r.start); setSelEnd(r.end); setPicking(false)
+    const d = new Date(r.start)
+    setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
+  }
+
+  const handleDayClick = (dateStr) => {
+    if (!picking) {
+      setSelStart(dateStr); setSelEnd(null); setPicking(true)
+    } else {
+      const [s, e] = dateStr < selStart ? [dateStr, selStart] : [selStart, dateStr]
+      setSelStart(s); setSelEnd(e); setPicking(false)
+    }
+  }
+
+  const isPresetActive = (fn) => {
+    const r = fn()
+    if (!r) return !selStart && !selEnd
+    return r.start === selStart && r.end === selEnd
+  }
+
+  const rightMonth = (viewMonth + 1) % 12
+  const rightYear = viewMonth === 11 ? viewYear + 1 : viewYear
+
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
+    else setViewMonth(m => m - 1)
+  }
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
+    else setViewMonth(m => m + 1)
+  }
+
+  const renderCal = (year, month) => {
+    const firstDow = new Date(year, month, 1).getDay()
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const cells = []
+    for (let i = 0; i < firstDow; i++) cells.push(null)
+    for (let d = 1; d <= daysInMonth; d++) {
+      cells.push(`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+    }
+
+    const effEnd = picking ? (hover || selEnd) : selEnd
+    const rangeStart = selStart && effEnd ? (selStart <= effEnd ? selStart : effEnd) : null
+    const rangeEnd = selStart && effEnd ? (selStart <= effEnd ? effEnd : selStart) : null
+
+    return (
+      <div style={{ minWidth: 220 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1 }}>
+          {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+            <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#9ca3af', padding: '4px 0', fontWeight: 600 }}>{d}</div>
+          ))}
+          {cells.map((dateStr, i) => {
+            if (!dateStr) return <div key={i} />
+            const isStart = dateStr === rangeStart
+            const isEnd = dateStr === rangeEnd
+            const inRange = rangeStart && rangeEnd && dateStr > rangeStart && dateStr < rangeEnd
+            const isEdge = isStart || isEnd
+            return (
+              <div key={i}
+                onClick={() => handleDayClick(dateStr)}
+                onMouseEnter={() => picking && setHover(dateStr)}
+                style={{
+                  textAlign: 'center', fontSize: 12, padding: '6px 2px', cursor: 'pointer', userSelect: 'none',
+                  borderRadius: 5,
+                  background: isEdge ? BLUE : inRange ? '#dbeafe' : 'transparent',
+                  color: isEdge ? '#fff' : inRange ? BLUE : '#111827',
+                  fontWeight: isEdge ? 700 : 400,
+                }}
+              >
+                {parseInt(dateStr.split('-')[2])}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  const canApply = (selStart && selEnd) || (!selStart && !selEnd)
+  const rangeLabel = selStart && selEnd
+    ? `${fmtDateLabel(selStart)} – ${fmtDateLabel(selEnd)}`
+    : picking ? `${fmtDateLabel(selStart)} – select end date` : 'Select a date range'
+
+  return (
+    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, background: '#fff', borderRadius: 12, boxShadow: '0 8px 40px rgba(0,0,0,0.18)', border: '1px solid #e5e7eb', marginTop: 6, minWidth: 620 }}>
+      <div style={{ display: 'flex' }}>
+        {/* Preset list */}
+        <div style={{ width: 155, borderRight: '1px solid #e5e7eb', padding: '10px 0', flexShrink: 0 }}>
+          {computedPresets.map(({ label, fn }) => (
+            <button key={label} onClick={() => applyPreset(fn)} style={{
+              display: 'block', width: '100%', textAlign: 'left', padding: '8px 16px',
+              border: 'none', borderLeft: `3px solid ${isPresetActive(fn) ? BLUE : 'transparent'}`,
+              background: isPresetActive(fn) ? '#eff6ff' : 'transparent',
+              color: isPresetActive(fn) ? BLUE : '#374151',
+              fontWeight: isPresetActive(fn) ? 600 : 400, fontSize: 13, cursor: 'pointer',
+            }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Dual calendar */}
+        <div style={{ flex: 1, padding: 16 }}>
+          <div style={{ display: 'flex', gap: 20 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <button onClick={prevMonth} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 18, lineHeight: 1, padding: '0 4px', borderRadius: 4 }}>‹</button>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
+                <div style={{ width: 22 }} />
+              </div>
+              {renderCal(viewYear, viewMonth)}
+            </div>
+            <div style={{ width: 1, background: '#e5e7eb' }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                <div style={{ width: 22 }} />
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
+                <button onClick={nextMonth} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 18, lineHeight: 1, padding: '0 4px', borderRadius: 4 }}>›</button>
+              </div>
+              {renderCal(rightYear, rightMonth)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ borderTop: '1px solid #e5e7eb', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 12, color: picking ? ORANGE : '#6b7280' }}>{rangeLabel}</span>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onClose} style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 12, color: '#374151', fontWeight: 500 }}>Cancel</button>
+          <button
+            onClick={() => { onChange(selStart && selEnd ? { start: selStart, end: selEnd } : null); onClose() }}
+            disabled={!canApply}
+            style={{ padding: '6px 18px', borderRadius: 6, border: 'none', background: canApply ? BLUE : '#93c5fd', color: '#fff', cursor: canApply ? 'pointer' : 'default', fontSize: 12, fontWeight: 700 }}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SectionLabel({ children }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '2rem 0 1rem' }}>
@@ -764,7 +949,8 @@ export default function Dashboard() {
   const [compareFileName, setCompareFileName] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState(null)
-  const [period, setPeriod] = useState('all')
+  const [dateRange, setDateRange] = useState(null)  // null = all time; { start, end } = filtered
+  const [showDatePicker, setShowDatePicker] = useState(false)
   const [search, setSearch] = useState('')
   const [productSearch, setProductSearch] = useState('')
   const [targets, setTargets] = useState(() => {
@@ -782,8 +968,8 @@ export default function Dashboard() {
   const fileRef = useRef()
   const compareFileRef = useRef()
 
-  const data = useMemo(() => rawData ? processData(rawData.rows, rawData.meta, period) : null, [rawData, period])
-  const compareData = useMemo(() => rawCompareData ? processData(rawCompareData.rows, rawCompareData.meta, period) : null, [rawCompareData, period])
+  const data = useMemo(() => rawData ? processData(rawData.rows, rawData.meta, dateRange) : null, [rawData, dateRange])
+  const compareData = useMemo(() => rawCompareData ? processData(rawCompareData.rows, rawCompareData.meta, dateRange) : null, [rawCompareData, dateRange])
 
   const handleFile = useCallback(file => {
     if (!file) return
@@ -815,7 +1001,7 @@ export default function Dashboard() {
 
   const resetAll = () => {
     setRawData(null); setFileName(null); setRawCompareData(null); setCompareFileName(null)
-    setError(null); setSearch(''); setProductSearch(''); setAllProductSearch(''); setSelectedSalesman(null); setSalesmanSearch(''); setSalesmanProductSearch(''); setTargets({})
+    setError(null); setSearch(''); setProductSearch(''); setAllProductSearch(''); setSelectedSalesman(null); setSalesmanSearch(''); setSalesmanProductSearch(''); setTargets({}); setDateRange(null); setShowDatePicker(false)
   }
 
   useEffect(() => {
@@ -950,23 +1136,38 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Right: period filter + actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        {/* Right: date picker + actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, position: 'relative' }}>
           {data && (
             <>
-              {/* Period tabs */}
-              <div style={{ display: 'flex', gap: 2, background: '#e5e7eb', borderRadius: 8, padding: 2 }}>
-                {[['7d','7d'],['30d','30d'],['all','All']].map(([k, l]) => (
-                  <button key={k} onClick={() => setPeriod(k)} style={{
-                    fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', border: 'none',
-                    background: period === k ? '#fff' : 'transparent',
-                    color: period === k ? BLUE : T.MUTED,
-                    fontWeight: period === k ? 700 : 400,
-                    boxShadow: period === k ? '0 1px 2px rgba(0,0,0,0.1)' : 'none',
-                    transition: 'all 0.15s',
-                  }}>{l}</button>
-                ))}
-              </div>
+              {/* Date range picker button */}
+              <button
+                onClick={() => setShowDatePicker(p => !p)}
+                style={{
+                  fontSize: 12, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                  border: `1px solid ${dateRange ? BLUE : T.BORDER_STRONG}`,
+                  background: dateRange ? '#eff6ff' : T.CARD,
+                  color: dateRange ? BLUE : T.TEXT,
+                  fontWeight: dateRange ? 600 : 400,
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <span>📅</span>
+                <span>{formatRangeLabel(dateRange)}</span>
+                <span style={{ color: T.MUTED, fontSize: 10 }}>▾</span>
+              </button>
+              {dateRange && (
+                <button onClick={() => setDateRange(null)} title="Clear date filter" style={{ fontSize: 11, padding: '4px 7px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>✕</button>
+              )}
+
+              {showDatePicker && (
+                <DateRangePicker
+                  value={dateRange}
+                  onChange={r => { setDateRange(r); setShowDatePicker(false) }}
+                  onClose={() => setShowDatePicker(false)}
+                />
+              )}
 
               <div style={{ width: 1, height: 20, background: T.BORDER_STRONG, margin: '0 2px' }} />
 
@@ -991,7 +1192,7 @@ export default function Dashboard() {
                   style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
                   ⬇ CSV
                 </button>
-                <button onClick={() => exportPDF(data, compareData, nameA, nameB, period)}
+                <button onClick={() => exportPDF(data, compareData, nameA, nameB, formatRangeLabel(dateRange))}
                   style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
                   📄 PDF
                 </button>
