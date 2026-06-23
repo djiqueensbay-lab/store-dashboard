@@ -703,10 +703,10 @@ function DateRangePicker({ value, onChange, onClose }) {
   const [viewMonth, setViewMonth] = useState(initDate.getMonth())
   const [selStart, setSelStart] = useState(value?.start ?? null)
   const [selEnd, setSelEnd] = useState(value?.end ?? null)
-  const [picking, setPicking] = useState(false) // true = waiting for end date
+  const [picking, setPicking] = useState(false)
   const [hover, setHover] = useState(null)
 
-  const computedPresets = [
+  const presets = [
     { label: 'Today', fn: () => ({ start: todayStr, end: todayStr }) },
     { label: 'Yesterday', fn: () => { const y = addDays(todayStr, -1); return { start: y, end: y } } },
     { label: 'Last 7 Days', fn: () => ({ start: addDays(todayStr, -6), end: todayStr }) },
@@ -725,75 +725,82 @@ function DateRangePicker({ value, onChange, onClose }) {
     const r = fn()
     if (!r) { setSelStart(null); setSelEnd(null); setPicking(false); return }
     setSelStart(r.start); setSelEnd(r.end); setPicking(false)
-    const d = new Date(r.start)
-    setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
+    const d = new Date(r.start); setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
   }
 
   const handleDayClick = (dateStr) => {
-    if (!picking) {
-      setSelStart(dateStr); setSelEnd(null); setPicking(true)
-    } else {
+    if (!picking) { setSelStart(dateStr); setSelEnd(null); setPicking(true) }
+    else {
       const [s, e] = dateStr < selStart ? [dateStr, selStart] : [selStart, dateStr]
-      setSelStart(s); setSelEnd(e); setPicking(false)
+      setSelStart(s); setSelEnd(e); setPicking(false); setHover(null)
     }
   }
 
   const isPresetActive = (fn) => {
     const r = fn()
-    if (!r) return !selStart && !selEnd
-    return r.start === selStart && r.end === selEnd
+    return r ? r.start === selStart && r.end === selEnd : !selStart && !selEnd
   }
 
   const rightMonth = (viewMonth + 1) % 12
   const rightYear = viewMonth === 11 ? viewYear + 1 : viewYear
-
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
-    else setViewMonth(m => m - 1)
-  }
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
-    else setViewMonth(m => m + 1)
-  }
 
   const renderCal = (year, month) => {
     const firstDow = new Date(year, month, 1).getDay()
     const daysInMonth = new Date(year, month + 1, 0).getDate()
     const cells = []
     for (let i = 0; i < firstDow; i++) cells.push(null)
-    for (let d = 1; d <= daysInMonth; d++) {
+    for (let d = 1; d <= daysInMonth; d++)
       cells.push(`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
-    }
 
-    const effEnd = picking ? (hover || selEnd) : selEnd
-    const rangeStart = selStart && effEnd ? (selStart <= effEnd ? selStart : effEnd) : null
-    const rangeEnd = selStart && effEnd ? (selStart <= effEnd ? effEnd : selStart) : null
+    const effEnd = picking ? (hover || null) : selEnd
+    const rS = selStart && effEnd ? (selStart <= effEnd ? selStart : effEnd) : null
+    const rE = selStart && effEnd ? (selStart <= effEnd ? effEnd : selStart) : null
+    const single = selStart === rE
+
+    // Build rows of 7
+    const rows = []
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7))
+    while (rows.length > 0 && rows[rows.length - 1].every(c => !c)) rows.pop()
 
     return (
-      <div style={{ minWidth: 220 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 1 }}>
+      <div style={{ minWidth: 224 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 32px)', gap: 0 }}>
           {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
-            <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#9ca3af', padding: '4px 0', fontWeight: 600 }}>{d}</div>
+            <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#9ca3af', padding: '0 0 8px', fontWeight: 600, letterSpacing: '0.04em' }}>{d}</div>
           ))}
-          {cells.map((dateStr, i) => {
-            if (!dateStr) return <div key={i} />
-            const isStart = dateStr === rangeStart
-            const isEnd = dateStr === rangeEnd
-            const inRange = rangeStart && rangeEnd && dateStr > rangeStart && dateStr < rangeEnd
-            const isEdge = isStart || isEnd
+          {rows.flat().map((dateStr, i) => {
+            if (!dateStr) return <div key={i} style={{ height: 34 }} />
+            const isS = dateStr === rS
+            const isE = dateStr === rE
+            const inR = rS && rE && dateStr > rS && dateStr < rE
+            const isToday = dateStr === todayStr
+            const dow = (firstDow + parseInt(dateStr.split('-')[2]) - 1) % 7
+            const isWeekStart = dow === 0
+            const isWeekEnd = dow === 6
+            const isRangeStart = isS && !single
+            const isRangeEnd = isE && !single
+
             return (
-              <div key={i}
-                onClick={() => handleDayClick(dateStr)}
-                onMouseEnter={() => picking && setHover(dateStr)}
-                style={{
-                  textAlign: 'center', fontSize: 12, padding: '6px 2px', cursor: 'pointer', userSelect: 'none',
-                  borderRadius: 5,
-                  background: isEdge ? BLUE : inRange ? '#dbeafe' : 'transparent',
-                  color: isEdge ? '#fff' : inRange ? BLUE : '#111827',
-                  fontWeight: isEdge ? 700 : 400,
-                }}
+              <div key={i} onClick={() => handleDayClick(dateStr)} onMouseEnter={() => picking && setHover(dateStr)}
+                style={{ position: 'relative', height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', userSelect: 'none' }}
               >
-                {parseInt(dateStr.split('-')[2])}
+                {/* Range background strip */}
+                {inR && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', borderRadius: isWeekStart ? '50% 0 0 50%' : isWeekEnd ? '0 50% 50% 0' : 0 }} />}
+                {isRangeStart && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', left: '50%', borderRadius: 0 }} />}
+                {isRangeEnd && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', right: '50%', borderRadius: 0 }} />}
+                {/* Day circle */}
+                <div style={{
+                  position: 'relative', zIndex: 1,
+                  width: 30, height: 30, borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: (isS || isE) ? BLUE : 'transparent',
+                  color: (isS || isE) ? '#fff' : inR ? BLUE : isToday ? BLUE : '#1f2937',
+                  fontWeight: (isS || isE) ? 700 : isToday ? 600 : 400,
+                  fontSize: 13,
+                  boxShadow: isToday && !(isS || isE) ? `inset 0 0 0 1.5px ${BLUE}` : 'none',
+                }}>
+                  {parseInt(dateStr.split('-')[2])}
+                </div>
               </div>
             )
           })}
@@ -803,45 +810,58 @@ function DateRangePicker({ value, onChange, onClose }) {
   }
 
   const canApply = (selStart && selEnd) || (!selStart && !selEnd)
-  const rangeLabel = selStart && selEnd
-    ? `${fmtDateLabel(selStart)} – ${fmtDateLabel(selEnd)}`
-    : picking ? `${fmtDateLabel(selStart)} – select end date` : 'Select a date range'
+  const footerLabel = selStart && selEnd
+    ? <><strong style={{ color: '#111' }}>{fmtDateLabel(selStart)}</strong><span style={{ color: '#9ca3af', margin: '0 8px' }}>→</span><strong style={{ color: '#111' }}>{fmtDateLabel(selEnd)}</strong></>
+    : picking
+      ? <><strong style={{ color: '#111' }}>{fmtDateLabel(selStart)}</strong><span style={{ color: '#9ca3af', margin: '0 8px' }}>→</span><span style={{ color: ORANGE, fontStyle: 'italic' }}>pick end date</span></>
+      : <span style={{ color: '#9ca3af' }}>Select a start date</span>
+
+  const NavBtn = ({ onClick, children }) => (
+    <button onClick={onClick} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: '#6b7280', flexShrink: 0 }}>{children}</button>
+  )
 
   return (
-    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, background: '#fff', borderRadius: 12, boxShadow: '0 8px 40px rgba(0,0,0,0.18)', border: '1px solid #e5e7eb', marginTop: 6, minWidth: 620 }}>
+    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, background: '#fff', borderRadius: 14, boxShadow: '0 12px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb', marginTop: 8, overflow: 'hidden', minWidth: 640 }}>
       <div style={{ display: 'flex' }}>
-        {/* Preset list */}
-        <div style={{ width: 155, borderRight: '1px solid #e5e7eb', padding: '10px 0', flexShrink: 0 }}>
-          {computedPresets.map(({ label, fn }) => (
-            <button key={label} onClick={() => applyPreset(fn)} style={{
-              display: 'block', width: '100%', textAlign: 'left', padding: '8px 16px',
-              border: 'none', borderLeft: `3px solid ${isPresetActive(fn) ? BLUE : 'transparent'}`,
-              background: isPresetActive(fn) ? '#eff6ff' : 'transparent',
-              color: isPresetActive(fn) ? BLUE : '#374151',
-              fontWeight: isPresetActive(fn) ? 600 : 400, fontSize: 13, cursor: 'pointer',
-            }}>
-              {label}
-            </button>
-          ))}
+
+        {/* Preset sidebar */}
+        <div style={{ width: 160, background: '#fafafa', borderRight: '1px solid #f0f0f0', padding: '16px 0', flexShrink: 0 }}>
+          <p style={{ margin: '0 0 8px 16px', fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quick select</p>
+          {presets.map(({ label, fn }) => {
+            const active = isPresetActive(fn)
+            return (
+              <button key={label} onClick={() => applyPreset(fn)} style={{
+                display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+                padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 13,
+                background: active ? '#eff6ff' : 'transparent',
+                color: active ? BLUE : '#374151',
+                fontWeight: active ? 600 : 400,
+              }}>
+                {active && <span style={{ width: 3, height: 14, background: BLUE, borderRadius: 2, marginRight: 8, flexShrink: 0 }} />}
+                {!active && <span style={{ width: 11, flexShrink: 0 }} />}
+                {label}
+              </button>
+            )
+          })}
         </div>
 
         {/* Dual calendar */}
-        <div style={{ flex: 1, padding: 16 }}>
-          <div style={{ display: 'flex', gap: 20 }}>
+        <div style={{ flex: 1, padding: '20px 20px 16px' }}>
+          <div style={{ display: 'flex', gap: 28 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <button onClick={prevMonth} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 18, lineHeight: 1, padding: '0 4px', borderRadius: 4 }}>‹</button>
-                <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
-                <div style={{ width: 22 }} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <NavBtn onClick={() => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) } else setViewMonth(m => m - 1) }}>‹</NavBtn>
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
+                <div style={{ width: 28 }} />
               </div>
               {renderCal(viewYear, viewMonth)}
             </div>
-            <div style={{ width: 1, background: '#e5e7eb' }} />
+            <div style={{ width: 1, background: '#f0f0f0', margin: '0 -4px' }} />
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                <div style={{ width: 22 }} />
-                <span style={{ fontWeight: 600, fontSize: 13 }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
-                <button onClick={nextMonth} style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#6b7280', fontSize: 18, lineHeight: 1, padding: '0 4px', borderRadius: 4 }}>›</button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ width: 28 }} />
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
+                <NavBtn onClick={() => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1) }}>›</NavBtn>
               </div>
               {renderCal(rightYear, rightMonth)}
             </div>
@@ -850,14 +870,14 @@ function DateRangePicker({ value, onChange, onClose }) {
       </div>
 
       {/* Footer */}
-      <div style={{ borderTop: '1px solid #e5e7eb', padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={{ fontSize: 12, color: picking ? ORANGE : '#6b7280' }}>{rangeLabel}</span>
+      <div style={{ borderTop: '1px solid #f0f0f0', padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fafafa' }}>
+        <div style={{ fontSize: 13 }}>{footerLabel}</div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button onClick={onClose} style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 12, color: '#374151', fontWeight: 500 }}>Cancel</button>
+          <button onClick={onClose} style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 500 }}>Cancel</button>
           <button
             onClick={() => { onChange(selStart && selEnd ? { start: selStart, end: selEnd } : null); onClose() }}
             disabled={!canApply}
-            style={{ padding: '6px 18px', borderRadius: 6, border: 'none', background: canApply ? BLUE : '#93c5fd', color: '#fff', cursor: canApply ? 'pointer' : 'default', fontSize: 12, fontWeight: 700 }}
+            style={{ padding: '7px 22px', borderRadius: 8, border: 'none', background: canApply ? BLUE : '#bfdbfe', color: '#fff', cursor: canApply ? 'pointer' : 'default', fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}
           >
             Apply
           </button>
@@ -2115,58 +2135,30 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Traffic summary */}
+                    {/* Traffic prose summary */}
                     {(() => {
-                      // Top 5 busiest heatmap cells
                       const cells = []
                       activeHeatData.heatmap.forEach((row, d) => row.forEach((v, h) => { if (v > 0) cells.push({ d, h, v }) }))
                       cells.sort((a, b) => b.v - a.v)
-                      const top5 = cells.slice(0, 5)
-                      // Top 3 slowest active cells (store hours 10–22)
-                      const activeCells = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v).slice(0, 3)
-                      // Top 5 dates by orders
-                      const topDates = [...activeHeatData.trend].sort((a, b) => b.orders - a.orders).slice(0, 5)
+                      const top3 = cells.slice(0, 3)
+                      const slowCells = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v)
+                      const slowSlot = slowCells[0]
+                      const topDates = [...activeHeatData.trend].sort((a, b) => b.orders - a.orders).slice(0, 3)
+                      const wrNum = parseFloat(activeHeatData.weekendRatio)
+                      const weekendNote = !isNaN(wrNum)
+                        ? wrNum >= 1.2 ? `Weekends are significantly busier — ${wrNum}× the weekday average.`
+                          : wrNum <= 0.85 ? `Weekdays actually outperform weekends (${wrNum}× ratio).`
+                          : `Weekend and weekday traffic are roughly equal (${wrNum}×).`
+                        : ''
+                      const peakList = top3.map(c => `${DAYS[c.d]} ${fmtHour(c.h)}–${fmtHour(c.h+1)} (${c.v} orders)`).join(', ')
+                      const dateList = topDates.map(d => `${d.fullDate || d.date} (${Math.abs(d.orders)} orders, ${fmtMYR(d.revenue)})`).join('; ')
+                      const slowNote = slowSlot ? `The quietest in-store hour is ${DAYS[slowSlot.d]} ${fmtHour(slowSlot.h)}–${fmtHour(slowSlot.h+1)} with only ${slowSlot.v} order${slowSlot.v !== 1 ? 's' : ''} — consider using this window for stock replenishment or team training.` : ''
                       return (
-                        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-                          {/* High traffic slots */}
-                          <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>High traffic slots</div>
-                            {top5.map((c, i) => (
-                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                                <div style={{ width: 20, height: 20, borderRadius: 4, background: `rgba(${activeHeatColor === STORE_B_COLOR ? '124,58,237' : '37,99,235'},${0.15 + (i === 0 ? 0.7 : i === 1 ? 0.5 : i === 2 ? 0.35 : 0.2)})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: i <= 1 ? '#fff' : activeHeatColor, flexShrink: 0 }}>{i + 1}</div>
-                                <div style={{ flex: 1 }}>
-                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h + 1)}</span>
-                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{c.v} orders</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {/* Low traffic slots */}
-                          <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Low traffic (store hours)</div>
-                            {activeCells.map((c, i) => (
-                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                                <div style={{ width: 20, height: 20, borderRadius: 4, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: T.MUTED, flexShrink: 0 }}>{i + 1}</div>
-                                <div style={{ flex: 1 }}>
-                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h + 1)}</span>
-                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{c.v} orders</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          {/* Top dates by traffic */}
-                          <div>
-                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Busiest dates</div>
-                            {topDates.map((d, i) => (
-                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                                <div style={{ width: 20, height: 20, borderRadius: 4, background: i === 0 ? activeHeatColor : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: i === 0 ? '#fff' : T.MUTED, flexShrink: 0 }}>{i + 1}</div>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{d.fullDate || d.date}</span>
-                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</span>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
+                        <div style={{ marginTop: 16, padding: '14px 16px', background: activeHeatColor === STORE_B_COLOR ? '#faf5ff' : '#f0f7ff', borderRadius: 10, border: `1px solid ${activeHeatColor === STORE_B_COLOR ? '#e9d5ff' : '#dbeafe'}` }}>
+                          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: activeHeatColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Traffic summary</p>
+                          <p style={{ margin: 0, fontSize: 13, color: T.TEXT, lineHeight: 1.65 }}>
+                            Peak traffic falls on <strong>{peakList}</strong>. {weekendNote} {slowNote} The top trading dates were <strong>{dateList}</strong>.
+                          </p>
                         </div>
                       )
                     })()}
