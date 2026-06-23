@@ -233,8 +233,8 @@ function processData(rows, meta = {}, dateRange = null) {
     brandOrders[brand] = (brandOrders[brand] || 0) + orders
     genderCount[gender] = (genderCount[gender] || 0) + 1
     ageOrders[age_group] = (ageOrders[age_group] || 0) + Math.abs(orders)
-    totalDiscount += discount
-    totalRSP += rsp * Math.abs(orders)
+    if (!isReturn) totalDiscount += discount
+    if (!isReturn) totalRSP += rsp * Math.abs(orders)
     totalRevenue += revenue
     totalOrders += Math.abs(orders)
 
@@ -991,6 +991,7 @@ export default function Dashboard() {
   const [draggingB, setDraggingB] = useState(false)
   const fileRef = useRef()
   const compareFileRef = useRef()
+  const fileCacheRef = useRef({})
 
   const data = useMemo(() => rawData ? processData(rawData.rows, rawData.meta, dateRange) : null, [rawData, dateRange])
   const compareData = useMemo(() => rawCompareData ? processData(rawCompareData.rows, rawCompareData.meta, dateRange) : null, [rawCompareData, dateRange])
@@ -999,6 +1000,7 @@ export default function Dashboard() {
     if (!file) return
     setError(null); setFileName(file.name)
     parseFile(file, parsed => {
+      fileCacheRef.current[file.name] = parsed
       setRawData(parsed)
       const entry = {
         filename: file.name,
@@ -1150,10 +1152,15 @@ export default function Dashboard() {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
       }}>
-        {/* Left: brand */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {/* Left: brand / home */}
+        <div
+          onClick={data ? resetAll : undefined}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, cursor: data ? 'pointer' : 'default', borderRadius: 8, padding: '2px 4px', transition: 'background 0.15s' }}
+          title={data ? 'Go to Home' : ''}
+        >
           <div style={{ width: 30, height: 30, borderRadius: 8, background: BLUE, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📊</div>
           <span style={{ fontWeight: 800, fontSize: 15, color: BLUE, letterSpacing: '-0.01em' }}>StoreDash</span>
+          {data && <span style={{ fontSize: 10, color: T.MUTED, marginLeft: -2 }}>⌂</span>}
         </div>
 
         {/* Center: store context */}
@@ -1294,9 +1301,16 @@ export default function Dashboard() {
             {/* Recent history */}
             {uploadHistory.length > 0 && (
               <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-                <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 10px', color: T.TEXT }}>🕐 Recent uploads</p>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <p style={{ fontWeight: 600, fontSize: 13, margin: 0, color: T.TEXT }}>🕐 Recent uploads</p>
+                  <button onClick={() => { setUploadHistory([]); localStorage.removeItem('storedash-history') }}
+                    style={{ fontSize: 11, color: T.MUTED, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4 }}>
+                    Clear all
+                  </button>
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {uploadHistory.map((h, i) => {
+                    const cached = !!fileCacheRef.current[h.filename]
                     const ago = (() => {
                       const diff = Math.floor((Date.now() - new Date(h.uploadedAt)) / 1000)
                       if (diff < 60) return 'just now'
@@ -1305,14 +1319,27 @@ export default function Dashboard() {
                       return `${Math.floor(diff / 86400)}d ago`
                     })()
                     return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: T.BG, borderRadius: 8, border: `1px solid ${T.BORDER}` }}>
-                        <span style={{ fontSize: 16 }}>📄</span>
+                      <div key={i}
+                        onClick={() => {
+                          if (cached) {
+                            setRawData(fileCacheRef.current[h.filename])
+                            setFileName(h.filename)
+                          } else {
+                            fileRef.current.click()
+                          }
+                        }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: T.BG, borderRadius: 8, border: `1px solid ${T.BORDER}`, cursor: 'pointer', transition: 'background 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#f0f4ff'}
+                        onMouseLeave={e => e.currentTarget.style.background = T.BG}
+                      >
+                        <span style={{ fontSize: 16 }}>{cached ? '📂' : '📄'}</span>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <p style={{ fontSize: 12, fontWeight: 600, color: T.TEXT, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.filename}</p>
                           <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>
                             {h.outlet && <span>{h.outlet} · </span>}
                             {h.period && <span>{h.period} · </span>}
-                            {h.totalTx && <span>{h.totalTx} tx</span>}
+                            {h.totalTx && <span>{h.totalTx} tx · </span>}
+                            <span style={{ color: cached ? GREEN : '#f59e0b' }}>{cached ? 'Click to reload' : 'Re-upload needed'}</span>
                           </p>
                         </div>
                         {h.kassieTotal != null && (
