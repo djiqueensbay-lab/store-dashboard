@@ -144,10 +144,13 @@ function normalizeRow(r) {
       isoDate = datePart
     }
     const hour = timePart ? parseInt(timePart.split(':')[0]) : 12
+    const qty = parseFloat(r['Qty']) || 1
     const sp = parseFloat(r['Selling Price(MYR)']) || 0
-    const rsp = parseFloat(r['RSP At Creation(MYR)']) || Math.abs(sp)
+    // RSP = original list price before any discount
+    const rsp = parseFloat(r['RSP At Creation(MYR)']) || parseFloat(r['RSP(MYR)']) || Math.abs(sp)
     const disc = parseFloat(r['Discount Amount(MYR)']) || 0
-    const sub = parseFloat(r['Sub Total(MYR)']) || parseFloat(r['Total(MYR)']) || sp
+    // Revenue = Net Sales after discount. Try explicit net field first, then Sub Total, then compute.
+    const sub = parseFloat(r['Net Sales(MYR)']) || parseFloat(r['Sub Total(MYR)']) || parseFloat(r['Total(MYR)']) || ((sp - disc) * qty)
     const isReturn = sub < 0
     return {
       date: isoDate, hour: isNaN(hour) ? 12 : hour,
@@ -337,7 +340,7 @@ function processData(rows, meta = {}, period = 'all') {
     heatmap, dowTotals, peakHour: peakH, peakDay: peakD, slowHour: slowH, slowDay: slowD,
     weekendRatio, busiestDay, meta, grossRevenue, returnRevenue, returnCount, returnRate,
     momCurrent, momPrev, momChange, momCurrentLabel, momPrevLabel, monthlyBreakdown,
-    topReturnedProducts,
+    topReturnedProducts, totalRSP,
   }
 }
 
@@ -842,7 +845,9 @@ export default function Dashboard() {
     if (!isNaN(wrNum) && wrNum > 1.3) items.push({ type: 'positive', icon: '📅', text: `Weekend traffic is ${wrNum}× weekday average — good for promotions` })
     else if (!isNaN(wrNum) && wrNum < 0.7) items.push({ type: 'neutral', icon: '📅', text: `Weekdays outperform weekends (${wrNum}× ratio) — consider weekday-focused offers` })
     if (data.peakHour !== undefined) items.push({ type: 'neutral', icon: '🕐', text: `Peak traffic: ${DAYS[data.peakDay]} ${data.peakHour}:00–${data.peakHour + 1}:00 — best time for demos or promos` })
-    if (data.rspGap > 5) items.push({ type: 'warning', icon: '💸', text: `Avg discount gap vs RSP is ${data.rspGap.toFixed(1)}% — review pricing strategy` })
+    const rspGapPct = data.totalRSP > 0 ? (data.rspGap / data.totalRSP) * 100 : 0
+    if (rspGapPct > 5) items.push({ type: 'warning', icon: '💸', text: `Discount gap is ${rspGapPct.toFixed(1)}% below RSP (${fmtMYR(data.rspGap)}) — review pricing strategy` })
+    else if (rspGapPct > 0) items.push({ type: 'neutral', icon: '💸', text: `Discount gap is ${rspGapPct.toFixed(1)}% below RSP — within acceptable range` })
     return items.slice(0, 6)
   }, [data])
 
@@ -1908,6 +1913,62 @@ export default function Dashboard() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Traffic summary */}
+                    {(() => {
+                      // Top 5 busiest heatmap cells
+                      const cells = []
+                      activeHeatData.heatmap.forEach((row, d) => row.forEach((v, h) => { if (v > 0) cells.push({ d, h, v }) }))
+                      cells.sort((a, b) => b.v - a.v)
+                      const top5 = cells.slice(0, 5)
+                      // Top 3 slowest active cells (store hours 10–22)
+                      const activeCells = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v).slice(0, 3)
+                      // Top 5 dates by orders
+                      const topDates = [...activeHeatData.trend].sort((a, b) => b.orders - a.orders).slice(0, 5)
+                      return (
+                        <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                          {/* High traffic slots */}
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>High traffic slots</div>
+                            {top5.map((c, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                                <div style={{ width: 20, height: 20, borderRadius: 4, background: `rgba(${activeHeatColor === STORE_B_COLOR ? '124,58,237' : '37,99,235'},${0.15 + (i === 0 ? 0.7 : i === 1 ? 0.5 : i === 2 ? 0.35 : 0.2)})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: i <= 1 ? '#fff' : activeHeatColor, flexShrink: 0 }}>{i + 1}</div>
+                                <div style={{ flex: 1 }}>
+                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h + 1)}</span>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{c.v} orders</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {/* Low traffic slots */}
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Low traffic (store hours)</div>
+                            {activeCells.map((c, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                                <div style={{ width: 20, height: 20, borderRadius: 4, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: T.MUTED, flexShrink: 0 }}>{i + 1}</div>
+                                <div style={{ flex: 1 }}>
+                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h + 1)}</span>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{c.v} orders</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          {/* Top dates by traffic */}
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 700, color: T.TEXT, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Busiest dates</div>
+                            {topDates.map((d, i) => (
+                              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                                <div style={{ width: 20, height: 20, borderRadius: 4, background: i === 0 ? activeHeatColor : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 700, color: i === 0 ? '#fff' : T.MUTED, flexShrink: 0 }}>{i + 1}</div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <span style={{ fontSize: 12, color: T.TEXT, fontWeight: 500 }}>{d.fullDate || d.date}</span>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 6 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </>
                 )
               })()}
