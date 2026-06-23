@@ -199,7 +199,7 @@ function processData(rows, meta = {}, dateRange = null) {
     normalized = allNormalized.filter(r => r.date >= dateRange.start && r.date <= dateRange.end)
   }
 
-  const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}
+  const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}, ordersByMonth = {}
   const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0))
   const categoryRev = {}, productRev = {}, productOrders = {}, productUnitsSold = {}
   const productTypeRev = {}, productTypeOrders = {}
@@ -222,6 +222,7 @@ function processData(rows, meta = {}, dateRange = null) {
     ordersByDate[date] = (ordersByDate[date] || 0) + orders
     const monthKey = date.slice(0, 7)
     revenueByMonth[monthKey] = (revenueByMonth[monthKey] || 0) + revenue
+    if (!isReturn) ordersByMonth[monthKey] = (ordersByMonth[monthKey] || 0) + Math.abs(orders)
     if (hour >= 0 && hour < 24) heatmap[dow][hour] += Math.abs(orders)
 
     categoryRev[category] = (categoryRev[category] || 0) + revenue
@@ -277,7 +278,7 @@ function processData(rows, meta = {}, dateRange = null) {
   const momPrev = revenueByMonth[momPrevLabel] || 0
   const momChange = momPrev > 0 ? ((momCurrent - momPrev) / momPrev) * 100 : 0
   const monthlyBreakdown = months.slice(-6).map(m => ({
-    label: fmtMonth(m), key: m, revenue: Math.round(revenueByMonth[m] || 0),
+    label: fmtMonth(m), key: m, revenue: Math.round(revenueByMonth[m] || 0), orders: ordersByMonth[m] || 0,
   }))
 
   const aov = totalOrders > 0 ? totalRevenue / totalOrders : 0
@@ -487,28 +488,38 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     `<div class="kpi"><div class="kpi-label">${lbl}</div><div class="kpi-value" style="color:${c}">${val}</div><div class="kpi-delta">${delta}</div></div>`
   ).join('')
 
+  const trunc = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s
+
   const salesTable = (d, color) =>
-    `<table><thead><tr><th>#</th><th>Salesman</th><th class="num">Revenue</th><th class="num">Orders</th><th class="num">Products</th></tr></thead><tbody>
-    ${d.salesmen.map((s, i) => `<tr><td class="muted">${i + 1}</td><td class="${i === 0 ? 'bold' : ''}">${s.name}</td><td class="num ${i === 0 ? 'bold' : ''}" style="color:${i === 0 ? color : '#111827'}">${fmtR(s.revenue)}</td><td class="num muted">${fmtN(s.orders)}</td><td class="num muted">${s.products.length}</td></tr>`).join('')}
+    `<table><thead><tr><th>#</th><th>Salesman</th><th class="num">Revenue</th><th class="num">Sales</th><th class="num">Return%</th></tr></thead><tbody>
+    ${d.salesmen.map((s, i) => `<tr><td class="muted">${i + 1}</td><td class="${i === 0 ? 'bold' : ''}">${s.name}</td><td class="num ${i === 0 ? 'bold' : ''}" style="color:${i === 0 ? color : '#111827'}">${fmtR(s.revenue)}</td><td class="num muted">${fmtN(s.orders)}</td><td class="num ${s.returnRate >= 15 ? 'red' : 'muted'}">${s.returnRate}%</td></tr>`).join('')}
     </tbody></table>`
 
   const prodTable = (d) =>
-    `<table><thead><tr><th>#</th><th>Product</th><th class="num">Revenue</th><th class="num">Orders</th></tr></thead><tbody>
-    ${d.topProducts.slice(0, 8).map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.orders)}</td></tr>`).join('')}
+    `<table><thead><tr><th>#</th><th>Product</th><th class="num">Revenue</th><th class="num">Sales</th></tr></thead><tbody>
+    ${d.topProducts.slice(0, 10).map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${trunc(p.name, 42)}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.orders)}</td></tr>`).join('')}
     </tbody></table>`
 
   const payTable = (d) =>
-    `<table><thead><tr><th>Method</th><th class="num">Revenue</th><th class="num">Transactions</th></tr></thead><tbody>
+    `<table><thead><tr><th>Method</th><th class="num">Revenue</th><th class="num">Sales</th></tr></thead><tbody>
     ${d.payments.map(p => `<tr><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.count)}</td></tr>`).join('')}
     </tbody></table>`
 
   const monthTable = (d) =>
-    `<table><thead><tr><th>Month</th><th class="num">Revenue</th></tr></thead><tbody>
-    ${d.monthlyBreakdown.map((m, i, arr) => {
+    `<table><thead><tr><th>Month</th><th class="num">Revenue</th><th class="num">Sales</th></tr></thead><tbody>
+    ${d.monthlyBreakdown.map(m => {
       const isCurrent = m.key === d.momCurrentLabel
-      return `<tr><td${isCurrent ? ' class="bold"' : ''}>${m.label}${isCurrent ? ' ✦' : ''}</td><td class="num${isCurrent ? ' bold blue' : ''}">${fmtR(m.revenue)}</td></tr>`
+      return `<tr><td${isCurrent ? ' class="bold"' : ''}>${m.label}${isCurrent ? ' ✦' : ''}</td><td class="num${isCurrent ? ' bold blue' : ''}">${fmtR(m.revenue)}</td><td class="num muted">${fmtN(m.orders || 0)}</td></tr>`
     }).join('')}
     </tbody></table>`
+
+  const ptypeTable = (d, color) => {
+    const rows = d.productTypes.map(pt => {
+      const pct = d.totalRevenue > 0 ? (pt.revenue / d.totalRevenue * 100).toFixed(1) : '0'
+      return `<tr><td style="color:${color}">${pt.name}</td><td class="num bold" style="color:${color}">${fmtR(pt.revenue)}</td><td class="num muted">${fmtN(pt.orders)} sales</td><td class="num muted">${pct}%</td></tr>`
+    }).join('')
+    return rows ? `<table><thead><tr><th>Product Type</th><th class="num">Revenue</th><th class="num">Sales</th><th class="num">Share</th></tr></thead><tbody>${rows}</tbody></table>` : '<p style="color:#9ca3af;font-size:8pt">No product type data</p>'
+  }
 
   const pageHeader = () => `
     <div class="page-header">
@@ -541,7 +552,11 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
       <div class="section-title">Performance Summary</div>
       <div class="kpi-grid">${kpiGrid(data, '#2563eb')}</div>
     </div>
-    <div class="two-col" style="margin-top:5mm">
+    <div class="section" style="margin-top:4mm">
+      <div class="section-title">Product Type Breakdown</div>
+      ${ptypeTable(data, '#2563eb')}
+    </div>
+    <div class="two-col" style="margin-top:4mm">
       <div class="section">
         <div class="section-title">Monthly Breakdown</div>
         ${monthTable(data)}
@@ -553,22 +568,20 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     </div>
     ${footer(1, totalPages)}`
 
-  // Page 2: Products + Staff
+  // Page 2: Staff + Products
   const page2 = `
     <div class="page-break">
     ${pageHeader()}
     <div class="store-divider divider-a">
       <div class="divider-title" style="color:#2563eb">${nameA}</div>
     </div>
-    <div class="two-col" style="margin-top:4mm">
-      <div class="section">
-        <div class="section-title">Salesman Performance</div>
-        ${salesTable(data, '#2563eb')}
-      </div>
-      <div class="section">
-        <div class="section-title">Top Products</div>
-        ${prodTable(data)}
-      </div>
+    <div class="section" style="margin-top:4mm">
+      <div class="section-title">Salesman Performance</div>
+      ${salesTable(data, '#2563eb')}
+    </div>
+    <div class="section" style="margin-top:5mm">
+      <div class="section-title">Top Products</div>
+      ${prodTable(data)}
     </div>
     ${footer(2, totalPages)}
     </div>`
@@ -585,7 +598,11 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
       <div class="section-title">Performance Summary</div>
       <div class="kpi-grid">${kpiGrid(compareData, '#7c3aed')}</div>
     </div>
-    <div class="two-col" style="margin-top:5mm">
+    <div class="section" style="margin-top:4mm">
+      <div class="section-title">Product Type Breakdown</div>
+      ${ptypeTable(compareData, '#7c3aed')}
+    </div>
+    <div class="two-col" style="margin-top:4mm">
       <div class="section">
         <div class="section-title">Monthly Breakdown</div>
         ${monthTable(compareData)}
@@ -598,7 +615,7 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     ${footer(3, totalPages)}
     </div>` : ''
 
-  // Page 4 (compare only): Store B Staff + Comparison table
+  // Page 4 (compare only): Store B Staff + Products + Comparison table
   const page4 = compareData ? (() => {
     const metrics = [
       ['Net Revenue', data.totalRevenue, compareData.totalRevenue, fmtR],
@@ -622,15 +639,13 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     <div class="store-divider divider-b">
       <div class="divider-title" style="color:#7c3aed">${nameB}</div>
     </div>
-    <div class="two-col" style="margin-top:4mm">
-      <div class="section">
-        <div class="section-title">Salesman Performance</div>
-        ${salesTable(compareData, '#7c3aed')}
-      </div>
-      <div class="section">
-        <div class="section-title">Top Products</div>
-        ${prodTable(compareData)}
-      </div>
+    <div class="section" style="margin-top:4mm">
+      <div class="section-title">Salesman Performance</div>
+      ${salesTable(compareData, '#7c3aed')}
+    </div>
+    <div class="section" style="margin-top:5mm">
+      <div class="section-title">Top Products</div>
+      ${prodTable(compareData)}
     </div>
     <div class="section" style="margin-top:6mm">
       <div class="section-title">Side-by-side Comparison — ${nameA} vs ${nameB}</div>
