@@ -120,6 +120,7 @@ function parsePOSFile(raw) {
     if (cell.startsWith('Report Time period')) meta.period = cell.replace('Report Time period :', '').trim()
     if (cell.startsWith('Outlets')) meta.outlet = cell.replace('Outlets :', '').trim()
     if (cell.startsWith('Total Transactions')) meta.totalTx = cell.replace('Total Transactions :', '').trim()
+    if (cell.startsWith('Total Sales')) meta.kassieTotal = parseFloat(cell.replace(/^Total Sales\s*:\s*\(MYR\)/, '').trim()) || null
     if (cell === 'Date') { headerIdx = i; break }
   }
   if (headerIdx === -1) return null
@@ -1289,6 +1290,13 @@ export default function Dashboard() {
                 {data.meta.period && <span style={{ fontSize: 12, color: '#3b82f6' }}>📅 {data.meta.period}</span>}
                 {data.meta.generated && <span style={{ fontSize: 12, color: T.MUTED }}>🕐 Generated: {data.meta.generated}</span>}
                 {data.meta.totalTx && <span style={{ fontSize: 12, color: T.MUTED }}>🧾 {data.meta.totalTx} transactions</span>}
+                {data.meta.kassieTotal != null && !dateRange && (
+                  <span style={{ fontSize: 12, color: Math.abs(data.totalRevenue - data.meta.kassieTotal) < 1 ? '#059669' : '#d97706', fontWeight: 600 }}>
+                    {Math.abs(data.totalRevenue - data.meta.kassieTotal) < 1
+                      ? `✓ Kassie total matches: ${fmtMYR(data.meta.kassieTotal)}`
+                      : `⚠ Kassie declares ${fmtMYR(data.meta.kassieTotal)} · StoreDash shows ${fmtMYR(data.totalRevenue)}`}
+                  </span>
+                )}
               </div>
             )}
 
