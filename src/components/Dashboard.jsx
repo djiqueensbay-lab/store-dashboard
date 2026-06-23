@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect, useSyncExternalStore } from 'react'
 import Papa from 'papaparse'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -30,6 +30,13 @@ const T = {
   META_BORDER: '#bfdbfe',
   META_TEXT: '#1d4ed8',
   SECTION: '#9ca3af',
+}
+
+function useWindowWidth() {
+  return useSyncExternalStore(
+    cb => { window.addEventListener('resize', cb); return () => window.removeEventListener('resize', cb) },
+    () => window.innerWidth
+  )
 }
 
 function fmtMYR(n) {
@@ -664,9 +671,9 @@ const TS = { itemStyle: { color: '#f9fafb' }, labelStyle: { color: '#d1d5db' } }
 function KPI({ icon, label, value, delta, color, small }) {
   return (
     <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: small ? '0.75rem 1rem' : '1rem 1.25rem', boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
-      <p style={{ fontSize: 11, color: T.MUTED, margin: '0 0 6px' }}>{icon} {label}</p>
-      <p style={{ fontSize: small ? 16 : 20, fontWeight: 700, margin: 0, color: T.TEXT }}>{value}</p>
-      {delta && <p style={{ fontSize: 11, margin: '4px 0 0', color: color || T.MUTED }}>{delta}</p>}
+      <p style={{ fontSize: 11, color: T.MUTED, margin: '0 0 6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{icon} {label}</p>
+      <p title={String(value)} style={{ fontSize: small ? 16 : 'clamp(13px, 2.2vw, 20px)', fontWeight: 700, margin: 0, color: T.TEXT, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.3 }}>{value}</p>
+      {delta && <p style={{ fontSize: 11, margin: '4px 0 0', color: color || T.MUTED, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{delta}</p>}
     </div>
   )
 }
@@ -702,7 +709,7 @@ function formatRangeLabel(dateRange) {
   return `${fmtDateLabel(dateRange.start)} – ${fmtDateLabel(dateRange.end)}`
 }
 
-function DateRangePicker({ value, onChange, onClose }) {
+function DateRangePicker({ value, onChange, onClose, isMobile }) {
   const todayStr = new Date().toISOString().slice(0, 10)
   const initDate = value?.start ? new Date(value.start) : new Date()
   const [viewYear, setViewYear] = useState(initDate.getFullYear())
@@ -827,51 +834,88 @@ function DateRangePicker({ value, onChange, onClose }) {
   )
 
   return (
-    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, background: '#fff', borderRadius: 14, boxShadow: '0 12px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb', marginTop: 8, overflow: 'hidden', minWidth: 640 }}>
-      <div style={{ display: 'flex' }}>
+    <div style={{
+      position: 'absolute', top: '100%', right: isMobile ? 'auto' : 0, left: isMobile ? '50%' : 'auto',
+      transform: isMobile ? 'translateX(-50%)' : 'none',
+      zIndex: 200, background: '#fff', borderRadius: 14,
+      boxShadow: '0 12px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)',
+      border: '1px solid #e5e7eb', marginTop: 8, overflow: 'hidden',
+      width: isMobile ? 'calc(100vw - 24px)' : 'auto', minWidth: isMobile ? 0 : 560,
+    }}>
+      <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row' }}>
 
-        {/* Preset sidebar */}
-        <div style={{ width: 160, background: '#fafafa', borderRight: '1px solid #f0f0f0', padding: '16px 0', flexShrink: 0 }}>
-          <p style={{ margin: '0 0 8px 16px', fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quick select</p>
-          {presets.map(({ label, fn }) => {
-            const active = isPresetActive(fn)
-            return (
-              <button key={label} onClick={() => applyPreset(fn)} style={{
-                display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
-                padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 13,
-                background: active ? '#eff6ff' : 'transparent',
-                color: active ? BLUE : '#374151',
-                fontWeight: active ? 600 : 400,
-              }}>
-                {active && <span style={{ width: 3, height: 14, background: BLUE, borderRadius: 2, marginRight: 8, flexShrink: 0 }} />}
-                {!active && <span style={{ width: 11, flexShrink: 0 }} />}
-                {label}
-              </button>
-            )
-          })}
+        {/* Preset sidebar / top strip on mobile */}
+        <div style={{
+          width: isMobile ? '100%' : 148, background: '#fafafa',
+          borderRight: isMobile ? 'none' : '1px solid #f0f0f0',
+          borderBottom: isMobile ? '1px solid #f0f0f0' : 'none',
+          padding: isMobile ? '10px 12px' : '16px 0', flexShrink: 0,
+        }}>
+          <p style={{ margin: isMobile ? '0 0 8px' : '0 0 8px 16px', fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quick select</p>
+          <div style={{ display: isMobile ? 'flex' : 'block', flexWrap: 'wrap', gap: isMobile ? 4 : 0 }}>
+            {presets.map(({ label, fn }) => {
+              const active = isPresetActive(fn)
+              return isMobile ? (
+                <button key={label} onClick={() => applyPreset(fn)} style={{
+                  padding: '4px 10px', border: `1px solid ${active ? BLUE : '#e5e7eb'}`, borderRadius: 20,
+                  cursor: 'pointer', fontSize: 11,
+                  background: active ? '#eff6ff' : '#fff',
+                  color: active ? BLUE : '#374151',
+                  fontWeight: active ? 600 : 400,
+                }}>
+                  {label}
+                </button>
+              ) : (
+                <button key={label} onClick={() => applyPreset(fn)} style={{
+                  display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+                  padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 13,
+                  background: active ? '#eff6ff' : 'transparent',
+                  color: active ? BLUE : '#374151',
+                  fontWeight: active ? 600 : 400,
+                }}>
+                  {active && <span style={{ width: 3, height: 14, background: BLUE, borderRadius: 2, marginRight: 8, flexShrink: 0 }} />}
+                  {!active && <span style={{ width: 11, flexShrink: 0 }} />}
+                  {label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {/* Dual calendar */}
-        <div style={{ flex: 1, padding: '20px 20px 16px' }}>
-          <div style={{ display: 'flex', gap: 28 }}>
-            <div style={{ flex: 1 }}>
+        {/* Calendar area */}
+        <div style={{ flex: 1, padding: isMobile ? '14px 12px 10px' : '20px 20px 16px', overflowX: 'auto' }}>
+          {isMobile ? (
+            /* Single calendar on mobile */
+            <div>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
                 <NavBtn onClick={() => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) } else setViewMonth(m => m - 1) }}>‹</NavBtn>
                 <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
-                <div style={{ width: 28 }} />
+                <NavBtn onClick={() => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1) }}>›</NavBtn>
               </div>
               {renderCal(viewYear, viewMonth)}
             </div>
-            <div style={{ width: 1, background: '#f0f0f0', margin: '0 -4px' }} />
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-                <div style={{ width: 28 }} />
-                <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
-                <NavBtn onClick={() => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1) }}>›</NavBtn>
+          ) : (
+            /* Dual calendar on tablet/desktop */
+            <div style={{ display: 'flex', gap: 28 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                  <NavBtn onClick={() => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) } else setViewMonth(m => m - 1) }}>‹</NavBtn>
+                  <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
+                  <div style={{ width: 28 }} />
+                </div>
+                {renderCal(viewYear, viewMonth)}
               </div>
-              {renderCal(rightYear, rightMonth)}
+              <div style={{ width: 1, background: '#f0f0f0', margin: '0 -4px' }} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                  <div style={{ width: 28 }} />
+                  <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
+                  <NavBtn onClick={() => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1) }}>›</NavBtn>
+                </div>
+                {renderCal(rightYear, rightMonth)}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -969,6 +1013,11 @@ function parseFile(file, onSuccess, onError) {
 }
 
 export default function Dashboard() {
+  const w = useWindowWidth()
+  const isMobile = w < 640
+  const isTablet = w >= 640 && w < 1024
+  const isDesktop = w >= 1024
+
   const [rawData, setRawData] = useState(null)
   const [fileName, setFileName] = useState(null)
   const [rawCompareData, setRawCompareData] = useState(null)
@@ -1153,8 +1202,11 @@ export default function Dashboard() {
         position: 'sticky', top: 0, zIndex: 10,
         borderBottom: `1px solid ${T.BORDER}`,
         background: T.NAV, backdropFilter: 'blur(12px)',
-        padding: '0 1.5rem', height: 56,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        padding: '0 1rem', height: isMobile ? 'auto' : 56, minHeight: 56,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+        flexWrap: isMobile ? 'wrap' : 'nowrap',
+        paddingTop: isMobile && data ? 8 : 0,
+        paddingBottom: isMobile && data ? 8 : 0,
         boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
       }}>
         {/* Left: brand / home */}
@@ -1168,19 +1220,19 @@ export default function Dashboard() {
           {data && <span style={{ fontSize: 10, color: T.MUTED, marginLeft: -2 }}>⌂</span>}
         </div>
 
-        {/* Center: store context */}
-        {data && (
+        {/* Center: store context — hidden on mobile to save space */}
+        {data && !isMobile && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'center', minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: 20, padding: '4px 12px' }}>
               <div style={{ width: 7, height: 7, borderRadius: '50%', background: BLUE, flexShrink: 0 }} />
-              <span style={{ fontSize: 12, fontWeight: 600, color: BLUE, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{data.meta?.outlet || fileName}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: BLUE, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: isTablet ? 120 : 180 }}>{data.meta?.outlet || fileName}</span>
             </div>
             {compareData && (
               <>
                 <span style={{ fontSize: 11, color: T.MUTED }}>vs</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f5f3ff', border: `1px solid #ddd6fe`, borderRadius: 20, padding: '4px 12px' }}>
                   <div style={{ width: 7, height: 7, borderRadius: '50%', background: STORE_B_COLOR, flexShrink: 0 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: STORE_B_COLOR, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{compareData.meta?.outlet || compareFileName}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: STORE_B_COLOR, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: isTablet ? 120 : 180 }}>{compareData.meta?.outlet || compareFileName}</span>
                 </div>
               </>
             )}
@@ -1188,24 +1240,25 @@ export default function Dashboard() {
         )}
 
         {/* Right: date picker + actions */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, position: 'relative', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
           {data && (
             <>
               {/* Date range picker button */}
               <button
                 onClick={() => setShowDatePicker(p => !p)}
                 style={{
-                  fontSize: 12, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                  fontSize: 12, padding: '5px 10px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
                   border: `1px solid ${dateRange ? BLUE : T.BORDER_STRONG}`,
                   background: dateRange ? '#eff6ff' : T.CARD,
                   color: dateRange ? BLUE : T.TEXT,
                   fontWeight: dateRange ? 600 : 400,
                   boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
-                  display: 'flex', alignItems: 'center', gap: 6,
+                  display: 'flex', alignItems: 'center', gap: 4,
                 }}
               >
                 <span>📅</span>
-                <span>{formatRangeLabel(dateRange)}</span>
+                {!isMobile && <span>{formatRangeLabel(dateRange)}</span>}
+                {isMobile && dateRange && <span style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis' }}>{formatRangeLabel(dateRange)}</span>}
                 <span style={{ color: T.MUTED, fontSize: 10 }}>▾</span>
               </button>
               {dateRange && (
@@ -1217,47 +1270,50 @@ export default function Dashboard() {
                   value={dateRange}
                   onChange={r => { setDateRange(r); setShowDatePicker(false) }}
                   onClose={() => setShowDatePicker(false)}
+                  isMobile={isMobile}
                 />
               )}
 
-              <div style={{ width: 1, height: 20, background: T.BORDER_STRONG, margin: '0 2px' }} />
+              {!isMobile && <div style={{ width: 1, height: 20, background: T.BORDER_STRONG, margin: '0 2px' }} />}
 
-              {!compareData && (
+              {!isMobile && !compareData && (
                 <>
                   <input ref={compareFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleCompareFile(e.target.files[0])} />
                   <button onClick={() => compareFileRef.current.click()}
-                    style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: '#f5f3ff', color: STORE_B_COLOR, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: '#f5f3ff', color: STORE_B_COLOR, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>
                     + Compare
                   </button>
                 </>
               )}
-              {compareData && (
+              {!isMobile && compareData && (
                 <button onClick={() => { setRawCompareData(null); setCompareFileName(null) }}
-                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>
+                  style={{ fontSize: 12, padding: '5px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>
                   ✕ Remove B
                 </button>
               )}
 
-              <div style={{ display: 'flex', gap: 4 }}>
-                <button onClick={() => exportCSV(data, fileName)}
-                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
-                  ⬇ CSV
-                </button>
-                <button onClick={() => exportPDF(data, compareData, nameA, nameB, formatRangeLabel(dateRange))}
-                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
-                  📄 PDF
-                </button>
-              </div>
+              {!isMobile && (
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button onClick={() => exportCSV(data, fileName)}
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+                    ⬇ CSV
+                  </button>
+                  <button onClick={() => exportPDF(data, compareData, nameA, nameB, formatRangeLabel(dateRange))}
+                    style={{ fontSize: 12, padding: '5px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+                    📄 PDF
+                  </button>
+                </div>
+              )}
             </>
           )}
           <button onClick={resetAll}
-            style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: data ? BLUE : T.CARD, color: data ? '#fff' : T.MUTED, cursor: 'pointer', fontWeight: data ? 600 : 400, boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+            style={{ fontSize: 12, padding: '5px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: data ? BLUE : T.CARD, color: data ? '#fff' : T.MUTED, cursor: 'pointer', fontWeight: data ? 600 : 400, boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
             {data ? '↑ Upload' : 'Upload CSV'}
           </button>
         </div>
       </nav>
 
-      <div style={{ maxWidth: 1140, margin: '0 auto', padding: '2rem 1.5rem' }}>
+      <div style={{ maxWidth: 1140, margin: '0 auto', padding: isMobile ? '1rem 0.75rem' : '2rem 1.5rem' }}>
 
         {/* Upload */}
         {!data && (
@@ -1407,7 +1463,7 @@ export default function Dashboard() {
                 <SectionLabel>Store comparison</SectionLabel>
 
                 {/* Side-by-side KPI comparison */}
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: 12 }}>
                   {[
                     { icon: '💰', label: 'Net revenue', a: data.totalRevenue, b: compareData.totalRevenue, fmt: fmtMYR },
                     { icon: '🛒', label: 'Total orders', a: data.totalOrders, b: compareData.totalOrders, fmt: fmtNum },
@@ -1564,7 +1620,8 @@ export default function Dashboard() {
                   background: draggingB ? '#ede9fe' : '#f5f3ff',
                   border: `2px dashed ${draggingB ? STORE_B_COLOR : 'rgba(124,58,237,0.4)'}`,
                   borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '0.5rem',
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'space-between',
+                  flexDirection: isMobile ? 'column' : 'row', gap: isMobile ? 10 : 0,
                   cursor: 'pointer', transition: 'all 0.15s',
                 }}
               >
@@ -1595,7 +1652,7 @@ export default function Dashboard() {
             {insights.length > 0 && (
               <div style={{ marginBottom: '1.25rem' }}>
                 <SectionLabel>Auto insights</SectionLabel>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${isMobile ? '100%' : '260px'}, 1fr))`, gap: 8 }}>
                   {insights.map((ins, i) => (
                     <div key={i} style={{
                       display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px',
@@ -1612,7 +1669,7 @@ export default function Dashboard() {
             )}
 
             <SectionLabel>Sales overview</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
               <KPI icon="💰" label="Net revenue" value={fmtMYR(data.totalRevenue)}
                 delta={`${data.growth >= 0 ? '+' : ''}${data.growth.toFixed(1)}% trend`}
                 color={data.growth >= 0 ? '#16a34a' : '#dc2626'} />
@@ -1660,7 +1717,7 @@ export default function Dashboard() {
 
             {/* ── RETURNS & REFUNDS ── */}
             <SectionLabel>Returns & refunds</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
               <KPI icon="💵" label="Gross revenue" value={fmtMYR(data.grossRevenue)} delta="before returns" />
               <KPI icon="↩️" label="Return revenue" value={fmtMYR(data.returnRevenue)} delta={`${data.returnCount} return transactions`} color={RED} />
               <KPI icon="✅" label="Net revenue" value={fmtMYR(data.totalRevenue)} delta="gross minus returns" color={GREEN} />
@@ -1671,7 +1728,7 @@ export default function Dashboard() {
 
             {/* ── RETURN BREAKDOWN ── */}
             {(data.topReturnedProducts?.length > 0 || data.salesmen.some(s => s.returnCount > 0)) && (
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: '1.25rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12, marginBottom: '1.25rem' }}>
                 {data.topReturnedProducts?.length > 0 && (
                   <Card title="Returns by product">
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1717,7 +1774,7 @@ export default function Dashboard() {
 
             {/* ── MONTH-OVER-MONTH ── */}
             <SectionLabel>Month-over-month</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: compareData ? '1fr 1fr 1.5fr' : '1fr 2fr', gap: 12, marginBottom: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : (compareData ? '1fr 1fr 1.5fr' : '1fr 2fr'), gap: 12, marginBottom: '1rem' }}>
               {/* Store A MoM card */}
               <Card title={compareData ? `${nameA} — MoM` : 'MoM revenue change'}>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1808,7 +1865,7 @@ export default function Dashboard() {
             </div>
 
             {/* Category + Products */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginTop: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1.4fr 1fr', gap: 12, marginTop: 12 }}>
               <Card title="Sales by product type">
                 <ResponsiveContainer width="100%" height={190}>
                   {productTypeComparison ? (
@@ -1885,7 +1942,7 @@ export default function Dashboard() {
 
             {/* ── STAFF PERFORMANCE ── */}
             <SectionLabel>Staff performance</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
               <Card
                 title="Salesman leaderboard"
                 action={
@@ -1998,7 +2055,7 @@ export default function Dashboard() {
 
             {/* Product Count */}
             <SectionLabel>Product count</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 12 }}>
 
               {/* Left: all products — comparison-aware */}
               <Card
@@ -2173,7 +2230,7 @@ export default function Dashboard() {
 
             {/* Discount */}
             <SectionLabel>Discount analysis</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr 1fr' : 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
               <KPI icon="🏷️" label="Total discount given" value={fmtMYR(data.totalDiscount)} />
               <KPI icon="📊" label="Discount rate" value={`${data.totalRevenue > 0 ? ((data.totalDiscount / (data.totalRevenue + data.totalDiscount)) * 100).toFixed(2) : '0'}%`} delta="of gross sales" />
               <KPI icon="📉" label="RSP gap (below RSP)" value={fmtMYR(data.rspGap)} delta="revenue not captured" color={RED} />
@@ -2332,7 +2389,7 @@ export default function Dashboard() {
               const tdColor = (compareData && heatView === 'b') ? STORE_B_COLOR : BLUE
               const tdDowMax = Math.max(...td.dowTotals.map(d => d.value))
               return (
-                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 12, marginTop: 12 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'auto 1fr', gap: 12, marginTop: 12 }}>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     {[
                       ['🕐','Peak hour', `${fmtHour(td.peakHour)}–${fmtHour(td.peakHour+1)}`, `on ${DAYS[td.peakDay]}`],
