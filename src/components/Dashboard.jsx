@@ -613,6 +613,7 @@ export default function Dashboard() {
   const [salesmanProductSearch, setSalesmanProductSearch] = useState('')
   const [heatView, setHeatView] = useState('a')
   const [staffView, setStaffView] = useState('a')
+  const [draggingB, setDraggingB] = useState(false)
   const fileRef = useRef()
   const compareFileRef = useRef()
 
@@ -1011,12 +1012,28 @@ export default function Dashboard() {
 
             {/* If no comparison yet, show a prompt */}
             {!compareData && (
-              <div style={{ background: '#f5f3ff', border: `1px dashed ${STORE_B_COLOR}`, borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div
+                onDragOver={e => { e.preventDefault(); setDraggingB(true) }}
+                onDragLeave={() => setDraggingB(false)}
+                onDrop={e => { e.preventDefault(); setDraggingB(false); handleCompareFile(e.dataTransfer.files[0]) }}
+                onClick={() => compareFileRef.current.click()}
+                style={{
+                  background: draggingB ? '#ede9fe' : '#f5f3ff',
+                  border: `2px dashed ${draggingB ? STORE_B_COLOR : 'rgba(124,58,237,0.4)'}`,
+                  borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '0.5rem',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  cursor: 'pointer', transition: 'all 0.15s',
+                }}
+              >
                 <div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: STORE_B_COLOR, margin: '0 0 2px' }}>Compare with another store</p>
-                  <p style={{ fontSize: 12, color: T.MUTED, margin: 0 }}>Upload a second store's CSV to see side-by-side revenue, category, and trend comparisons</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: STORE_B_COLOR, margin: '0 0 2px' }}>
+                    {draggingB ? '📂 Drop Store B CSV here' : 'Compare with another store'}
+                  </p>
+                  <p style={{ fontSize: 12, color: T.MUTED, margin: 0 }}>
+                    {draggingB ? 'Release to load Store B' : 'Drag & drop a CSV here, or click to browse'}
+                  </p>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }} onClick={e => e.stopPropagation()}>
                   <input ref={compareFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleCompareFile(e.target.files[0])} />
                   <button onClick={loadDemoCompare}
                     style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: 'transparent', color: STORE_B_COLOR, cursor: 'pointer', whiteSpace: 'nowrap' }}>
