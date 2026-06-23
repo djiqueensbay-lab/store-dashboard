@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import Papa from 'papaparse'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -174,17 +174,24 @@ function normalizeRow(r) {
 }
 
 function processData(rows, meta = {}, period = 'all') {
-  let normalized = rows.map(normalizeRow).filter(r => r.date)
-  if (period !== 'all') {
+  const allNormalized = rows.map(normalizeRow).filter(r => r.date)
+
+  // Period filter relative to the data's own last date, not today
+  let normalized = allNormalized
+  if (period !== 'all' && allNormalized.length > 0) {
+    const maxDateStr = allNormalized.reduce((max, r) => r.date > max ? r.date : max, allNormalized[0].date)
+    const maxTime = new Date(maxDateStr).getTime()
     const cutoffMs = period === '7d' ? 7 * 86400000 : 30 * 86400000
-    const cutoff = new Date(Date.now() - cutoffMs)
-    normalized = normalized.filter(r => new Date(r.date) >= cutoff)
+    normalized = allNormalized.filter(r => new Date(r.date).getTime() >= maxTime - cutoffMs)
   }
+
   const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}
   const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0))
   const categoryRev = {}, productRev = {}, productOrders = {}, productUnitsSold = {}
   const productTypeRev = {}, productTypeOrders = {}
   const salesmanRev = {}, salesmanOrders = {}, salesmanProducts = {}
+  const salesmanTxCount = {}, salesmanReturnCount = {}, salesmanReturnRev = {}
+  const productTxCount = {}, productReturnCount = {}, productReturnRev = {}
   const paymentRev = {}, paymentCount = {}
   const brandRev = {}, brandOrders = {}
   const genderCount = {}, ageOrders = {}
@@ -228,8 +235,17 @@ function processData(rows, meta = {}, period = 'all') {
     totalRSP += rsp * Math.abs(orders)
     totalRevenue += revenue
     totalOrders += Math.abs(orders)
-    if (isReturn) { returnRevenue += Math.abs(revenue); returnCount++ }
-    else grossRevenue += revenue
+
+    // Return tracking per product and salesman
+    productTxCount[product] = (productTxCount[product] || 0) + 1
+    salesmanTxCount[salesman] = (salesmanTxCount[salesman] || 0) + 1
+    if (isReturn) {
+      returnRevenue += Math.abs(revenue); returnCount++
+      productReturnCount[product] = (productReturnCount[product] || 0) + 1
+      productReturnRev[product] = (productReturnRev[product] || 0) + Math.abs(revenue)
+      salesmanReturnCount[salesman] = (salesmanReturnCount[salesman] || 0) + 1
+      salesmanReturnRev[salesman] = (salesmanReturnRev[salesman] || 0) + Math.abs(revenue)
+    } else grossRevenue += revenue
   })
 
   const sortedDates = Object.keys(revenueByDate).sort()
@@ -264,10 +280,23 @@ function processData(rows, meta = {}, period = 'all') {
     .filter(p => p.revenue > 0)
   const topProducts = Object.entries(productRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: productOrders[name] || 0 }))
   const allProducts = Object.entries(productUnitsSold).sort((a, b) => b[1] - a[1]).map(([name, units]) => ({ name, units, revenue: Math.round(productRev[name] || 0) }))
-  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({
-    name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0,
-    products: Object.entries(salesmanProducts[name] || {}).sort((a, b) => b[1] - a[1]).map(([product, units]) => ({ product, units })),
-  }))
+  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => {
+    const rc = salesmanReturnCount[name] || 0
+    const tx = salesmanTxCount[name] || 0
+    return {
+      name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0,
+      products: Object.entries(salesmanProducts[name] || {}).sort((a, b) => b[1] - a[1]).map(([product, units]) => ({ product, units })),
+      returnCount: rc, returnRevenue: Math.round(salesmanReturnRev[name] || 0),
+      returnRate: tx > 0 ? Math.round((rc / tx) * 100) : 0,
+    }
+  })
+  const topReturnedProducts = Object.entries(productReturnCount)
+    .map(([name, rc]) => {
+      const tx = productTxCount[name] || rc
+      return { name, returnCount: rc, returnRevenue: Math.round(productReturnRev[name] || 0), returnRate: Math.round((rc / tx) * 100) }
+    })
+    .sort((a, b) => b.returnCount - a.returnCount)
+    .slice(0, 8)
   const payments = Object.entries(paymentRev).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), count: paymentCount[name] || 0 }))
   const brands = Object.entries(brandRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: brandOrders[name] || 0 }))
   const genders = Object.entries(genderCount).map(([name, value]) => ({ name, value }))
@@ -308,6 +337,7 @@ function processData(rows, meta = {}, period = 'all') {
     heatmap, dowTotals, peakHour: peakH, peakDay: peakD, slowHour: slowH, slowDay: slowD,
     weekendRatio, busiestDay, meta, grossRevenue, returnRevenue, returnCount, returnRate,
     momCurrent, momPrev, momChange, momCurrentLabel, momPrevLabel, monthlyBreakdown,
+    topReturnedProducts,
   }
 }
 
@@ -734,7 +764,9 @@ export default function Dashboard() {
   const [period, setPeriod] = useState('all')
   const [search, setSearch] = useState('')
   const [productSearch, setProductSearch] = useState('')
-  const [targets, setTargets] = useState({})
+  const [targets, setTargets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('storedash-targets') || '{}') } catch { return {} }
+  })
   const [editingTargets, setEditingTargets] = useState(false)
   const [allProductSearch, setAllProductSearch] = useState('')
   const [selectedSalesman, setSelectedSalesman] = useState(null)
@@ -783,7 +815,36 @@ export default function Dashboard() {
     setError(null); setSearch(''); setProductSearch(''); setAllProductSearch(''); setSelectedSalesman(null); setSalesmanSearch(''); setSalesmanProductSearch(''); setTargets({})
   }
 
+  useEffect(() => {
+    localStorage.setItem('storedash-targets', JSON.stringify(targets))
+  }, [targets])
+
   const trend = data?.trend ?? []
+
+  // Auto-insights: surface key signals from data
+  const insights = useMemo(() => {
+    if (!data) return []
+    const items = []
+    if (data.momChange !== null && data.momChange !== undefined) {
+      if (data.momChange >= 10) items.push({ type: 'positive', icon: '📈', text: `Revenue up ${data.momChange.toFixed(1)}% vs last month (${data.momPrevLabel} → ${data.momCurrentLabel})` })
+      else if (data.momChange <= -10) items.push({ type: 'warning', icon: '📉', text: `Revenue down ${Math.abs(data.momChange).toFixed(1)}% vs last month — may need attention` })
+    }
+    if (data.returnRate > 0.08) items.push({ type: 'warning', icon: '↩️', text: `Return rate is ${(data.returnRate * 100).toFixed(1)}% — above 8% threshold` })
+    else if (data.returnRate > 0) items.push({ type: 'neutral', icon: '↩️', text: `Return rate is ${(data.returnRate * 100).toFixed(1)}% — within normal range` })
+    const topSalesman = data.salesmen[0]
+    const secondSalesman = data.salesmen[1]
+    if (topSalesman && secondSalesman && topSalesman.revenue > secondSalesman.revenue * 1.5) {
+      items.push({ type: 'neutral', icon: '🏆', text: `${topSalesman.name} leads by ${((topSalesman.revenue / secondSalesman.revenue - 1) * 100).toFixed(0)}% over #2 — consider sharing their approach` })
+    }
+    const highReturnStaff = data.salesmen.filter(s => s.returnRate > 15 && s.returnCount >= 2)
+    highReturnStaff.forEach(s => items.push({ type: 'warning', icon: '⚠️', text: `${s.name} has a ${s.returnRate}% return rate (${s.returnCount} returns) — may need coaching` }))
+    const wrNum = parseFloat(data.weekendRatio)
+    if (!isNaN(wrNum) && wrNum > 1.3) items.push({ type: 'positive', icon: '📅', text: `Weekend traffic is ${wrNum}× weekday average — good for promotions` })
+    else if (!isNaN(wrNum) && wrNum < 0.7) items.push({ type: 'neutral', icon: '📅', text: `Weekdays outperform weekends (${wrNum}× ratio) — consider weekday-focused offers` })
+    if (data.peakHour !== undefined) items.push({ type: 'neutral', icon: '🕐', text: `Peak traffic: ${DAYS[data.peakDay]} ${data.peakHour}:00–${data.peakHour + 1}:00 — best time for demos or promos` })
+    if (data.rspGap > 5) items.push({ type: 'warning', icon: '💸', text: `Avg discount gap vs RSP is ${data.rspGap.toFixed(1)}% — review pricing strategy` })
+    return items.slice(0, 6)
+  }, [data])
 
   const activeProducts = data ? (productSearch ? data.topProducts.filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase())) : data.topProducts) : []
 
@@ -840,6 +901,12 @@ export default function Dashboard() {
       .map(name => ({ name, unitsA: aMap[name] || 0, unitsB: bMap[name] || 0 }))
       .sort((a, b) => (b.unitsA + b.unitsB) - (a.unitsA + a.unitsB))
   })()
+
+  const productTypeComparison = compareData ? ['Drone', 'Handheld', 'Other'].map(name => {
+    const a = data?.productTypes.find(p => p.name === name)
+    const b = compareData.productTypes.find(p => p.name === name)
+    return { name, storeA: a?.revenue || 0, storeB: b?.revenue || 0, ordersA: a?.orders || 0, ordersB: b?.orders || 0 }
+  }).filter(p => p.storeA > 0 || p.storeB > 0) : null
 
   return (
     <div style={{ minHeight: '100vh', background: T.BG, color: T.TEXT, fontFamily: "'Inter', system-ui, sans-serif" }}>
@@ -1189,6 +1256,26 @@ export default function Dashboard() {
             )}
 
             {/* ── SALES OVERVIEW ── */}
+            {/* ── AUTO INSIGHTS ── */}
+            {insights.length > 0 && (
+              <div style={{ marginBottom: '1.25rem' }}>
+                <SectionLabel>Auto insights</SectionLabel>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+                  {insights.map((ins, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px',
+                      background: ins.type === 'positive' ? '#f0fdf4' : ins.type === 'warning' ? '#fff7ed' : T.CARD,
+                      border: `1px solid ${ins.type === 'positive' ? '#bbf7d0' : ins.type === 'warning' ? '#fed7aa' : T.BORDER}`,
+                      borderRadius: 10
+                    }}>
+                      <span style={{ fontSize: 16, lineHeight: 1.4 }}>{ins.icon}</span>
+                      <span style={{ fontSize: 12.5, color: T.TEXT, lineHeight: 1.5 }}>{ins.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <SectionLabel>Sales overview</SectionLabel>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
               <KPI icon="💰" label="Net revenue" value={fmtMYR(data.totalRevenue)}
@@ -1246,6 +1333,52 @@ export default function Dashboard() {
                 delta={data.returnRate < 5 ? 'Healthy' : data.returnRate < 10 ? 'Monitor closely' : 'High — investigate'}
                 color={data.returnRate < 5 ? GREEN : data.returnRate < 10 ? ORANGE : RED} />
             </div>
+
+            {/* ── RETURN BREAKDOWN ── */}
+            {(data.topReturnedProducts?.length > 0 || data.salesmen.some(s => s.returnCount > 0)) && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: '1.25rem' }}>
+                {data.topReturnedProducts?.length > 0 && (
+                  <Card title="Returns by product">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {data.topReturnedProducts.map((p, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 11, color: T.MUTED, minWidth: 16, textAlign: 'right' }}>{i + 1}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>{p.name}</span>
+                              <span style={{ fontSize: 11, color: p.returnRate >= 15 ? RED : T.MUTED }}>{p.returnRate}% · {p.returnCount} returns</span>
+                            </div>
+                            <div style={{ height: 4, background: T.BORDER, borderRadius: 2 }}>
+                              <div style={{ height: '100%', width: `${Math.min(p.returnRate, 100)}%`, background: p.returnRate >= 15 ? RED : ORANGE, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+                {data.salesmen.some(s => s.returnCount > 0) && (
+                  <Card title="Returns by salesman">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {data.salesmen.filter(s => s.returnCount > 0).sort((a, b) => b.returnCount - a.returnCount).map((s, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 11, color: T.MUTED, minWidth: 16, textAlign: 'right' }}>{i + 1}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: T.TEXT }}>{s.name}</span>
+                              <span style={{ fontSize: 11, color: s.returnRate >= 15 ? RED : T.MUTED }}>{s.returnRate}% · {s.returnCount} returns · {fmtMYR(s.returnRevenue)}</span>
+                            </div>
+                            <div style={{ height: 4, background: T.BORDER, borderRadius: 2 }}>
+                              <div style={{ height: '100%', width: `${Math.min(s.returnRate, 100)}%`, background: s.returnRate >= 15 ? RED : ORANGE, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+              </div>
+            )}
 
             {/* ── MONTH-OVER-MONTH ── */}
             <SectionLabel>Month-over-month</SectionLabel>
@@ -1343,21 +1476,38 @@ export default function Dashboard() {
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginTop: 12 }}>
               <Card title="Sales by product type">
                 <ResponsiveContainer width="100%" height={190}>
-                  <BarChart data={data.productTypes} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
-                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
-                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
-                      formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
-                    <Bar dataKey="revenue" radius={[4,4,0,0]}>
-                      {data.productTypes.map((pt, i) => (
-                        <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
-                      ))}
-                    </Bar>
-                  </BarChart>
+                  {productTypeComparison ? (
+                    <BarChart data={productTypeComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
+                        formatter={(v, key) => [fmtMYR(v), key === 'storeA' ? nameA : nameB]} />
+                      <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name={nameA} />
+                      <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name={nameB} />
+                    </BarChart>
+                  ) : (
+                    <BarChart data={data.productTypes} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
+                        formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
+                      <Bar dataKey="revenue" radius={[4,4,0,0]}>
+                        {data.productTypes.map((pt, i) => (
+                          <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  )}
                 </ResponsiveContainer>
                 <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
-                  {[{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
+                  {productTypeComparison ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: BLUE }} />{nameA}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: STORE_B_COLOR }} />{nameB}</div>
+                    </>
+                  ) : [{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
                     const pt = data.productTypes.find(p => p.name === t.name)
                     return pt ? (
                       <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
