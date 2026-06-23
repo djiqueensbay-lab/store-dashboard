@@ -61,12 +61,17 @@ function seedRandom(d, h) {
   return x - Math.floor(x)
 }
 
+const PTYPE_COLORS = { Drone: '#2563eb', Handheld: '#059669', Home: '#d97706', Power: '#7c3aed' }
+const PTYPES = ['Drone', 'Handheld', 'Home', 'Power']
+
 function classifyProductType(product) {
   const p = (product || '').toUpperCase()
-  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b/.test(p) ||
-      /\bDJI\s+AIR\b/.test(p)) return 'Drone'
-  if (/\bOSMO\b|\bRS\s*[C234]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b/.test(p)) return 'Handheld'
-  return 'Other'
+  if (/\bPOWER\b/.test(p)) return 'Power'
+  if (/\bSMART HOME\b|\bDOORBELL\b|\bHOME\s+SECURITY\b|\bO3\s+MODULE\b/.test(p)) return 'Home'
+  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b|\bFLIP\b|\bLITO\b/.test(p) ||
+      /\bDJI\s+AIR\b|\bAIR\s+\d/.test(p)) return 'Drone'
+  if (/\bOSMO\b|\bRS\s*[C2345]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b|\bMOBILE\b/.test(p)) return 'Handheld'
+  return 'Drone'
 }
 
 function generateDemoData(seed = 0) {
@@ -277,7 +282,7 @@ function processData(rows, meta = {}, dateRange = null) {
   const returnRate = (totalOrders + returnCount) > 0 ? returnCount / (totalOrders + returnCount) * 100 : 0
 
   const categories = Object.entries(categoryRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue) }))
-  const productTypes = ['Drone', 'Handheld', 'Other']
+  const productTypes = PTYPES
     .map(name => ({ name, revenue: Math.round(productTypeRev[name] || 0), orders: productTypeOrders[name] || 0 }))
     .filter(p => p.revenue > 0)
   const topProducts = Object.entries(productRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: productOrders[name] || 0 }))
@@ -352,7 +357,7 @@ function exportCSV(data, fileName) {
     ['Gross Revenue (MYR)', data.grossRevenue.toFixed(2)],
     ['Return Revenue (MYR)', data.returnRevenue.toFixed(2)],
     ['Net Revenue (MYR)', data.totalRevenue.toFixed(2)],
-    ['Total Orders', data.totalOrders],
+    ['Total Sales', data.totalOrders],
     ['Return Count', data.returnCount],
     ['Return Rate %', data.returnRate.toFixed(2)],
     ['Avg Order Value (MYR)', data.aov.toFixed(2)],
@@ -360,11 +365,11 @@ function exportCSV(data, fileName) {
     ['RSP Gap (MYR)', data.rspGap.toFixed(2)],
     [],
     ['TOP PRODUCTS'],
-    ['Product', 'Revenue (MYR)', 'Orders'],
+    ['Product', 'Revenue (MYR)', 'Sales'],
     ...data.topProducts.map(p => [p.name, p.revenue, p.orders]),
     [],
     ['SALESMEN'],
-    ['Salesman', 'Revenue (MYR)', 'Orders'],
+    ['Salesman', 'Revenue (MYR)', 'Sales'],
     ...data.salesmen.map(s => [s.name, s.revenue, s.orders]),
     [],
     ['CATEGORIES'],
@@ -380,7 +385,7 @@ function exportCSV(data, fileName) {
     ...data.monthlyBreakdown.map(m => [m.key, m.revenue]),
     [],
     ['DAILY TREND'],
-    ['Date', 'Revenue (MYR)', 'Orders'],
+    ['Date', 'Revenue (MYR)', 'Sales'],
     ...data.trend.map(t => [t.fullDate, t.revenue, t.orders]),
   ]
   const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
@@ -465,7 +470,7 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     ['Net Revenue', fmtR(d.totalRevenue), color, `${d.growth >= 0 ? '+' : ''}${d.growth.toFixed(1)}% period trend`],
     ['Gross Revenue', fmtR(d.grossRevenue), '#111827', 'before returns'],
     ['Return Revenue', fmtR(d.returnRevenue), '#dc2626', `${d.returnCount} transactions`],
-    ['Total Orders', fmtN(d.totalOrders), '#111827', 'units sold'],
+    ['Total Sales', fmtN(d.totalOrders), '#111827', 'units sold'],
     ['Return Rate', d.returnRate.toFixed(1) + '%', d.returnRate < 5 ? '#059669' : '#dc2626', d.returnRate < 5 ? 'Healthy' : 'Monitor'],
     ['Avg Order Value', fmtR(d.aov), '#111827', 'per transaction'],
     ['Total Discount', fmtR(d.totalDiscount), '#d97706', `${d.totalRevenue > 0 ? ((d.totalDiscount / (d.totalRevenue + d.totalDiscount)) * 100).toFixed(1) : 0}% of gross`],
@@ -592,7 +597,7 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
       ['Net Revenue', data.totalRevenue, compareData.totalRevenue, fmtR],
       ['Gross Revenue', data.grossRevenue, compareData.grossRevenue, fmtR],
       ['Return Revenue', data.returnRevenue, compareData.returnRevenue, fmtR],
-      ['Total Orders', data.totalOrders, compareData.totalOrders, fmtN],
+      ['Total Sales', data.totalOrders, compareData.totalOrders, fmtN],
       ['Avg Order Value', data.aov, compareData.aov, fmtR],
       ['Return Rate (%)', data.returnRate, compareData.returnRate, v => v.toFixed(1) + '%'],
       ['Total Discount', data.totalDiscount, compareData.totalDiscount, fmtR],
@@ -1134,7 +1139,7 @@ export default function Dashboard() {
       .sort((a, b) => (b.unitsA + b.unitsB) - (a.unitsA + a.unitsB))
   })()
 
-  const productTypeComparison = compareData ? ['Drone', 'Handheld', 'Other'].map(name => {
+  const productTypeComparison = compareData ? PTYPES.map(name => {
     const a = data?.productTypes.find(p => p.name === name)
     const b = compareData.productTypes.find(p => p.name === name)
     return { name, storeA: a?.revenue || 0, storeB: b?.revenue || 0, ordersA: a?.orders || 0, ordersB: b?.orders || 0 }
@@ -1338,8 +1343,8 @@ export default function Dashboard() {
                           <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>
                             {h.outlet && <span>{h.outlet} · </span>}
                             {h.period && <span>{h.period} · </span>}
-                            {h.totalTx && <span>{h.totalTx} tx · </span>}
-                            <span style={{ color: cached ? GREEN : '#f59e0b' }}>{cached ? 'Click to reload' : 'Re-upload needed'}</span>
+                            {h.totalTx && <span>{h.totalTx} tx</span>}
+                            {cached && <span style={{ color: GREEN }}> · Click to reload</span>}
                           </p>
                         </div>
                         {h.kassieTotal != null && (
@@ -1611,7 +1616,7 @@ export default function Dashboard() {
               <KPI icon="💰" label="Net revenue" value={fmtMYR(data.totalRevenue)}
                 delta={`${data.growth >= 0 ? '+' : ''}${data.growth.toFixed(1)}% trend`}
                 color={data.growth >= 0 ? '#16a34a' : '#dc2626'} />
-              <KPI icon="🛒" label="Total orders" value={fmtNum(data.totalOrders)} delta="units sold" />
+              <KPI icon="🛒" label="Total sales" value={fmtNum(data.totalOrders)} delta="units sold" />
               <KPI icon="🧾" label="Avg order value" value={fmtMYR(data.aov)} delta="per transaction" />
               <KPI icon="🏷️" label="Total discounts" value={fmtMYR(data.totalDiscount)}
                 delta={data.totalRevenue > 0 ? `${((data.totalDiscount / (data.totalRevenue + data.totalDiscount)) * 100).toFixed(1)}% of gross` : ''} color={ORANGE} />
@@ -1825,7 +1830,7 @@ export default function Dashboard() {
                         formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
                       <Bar dataKey="revenue" radius={[4,4,0,0]}>
                         {data.productTypes.map((pt, i) => (
-                          <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
+                          <Cell key={i} fill={PTYPE_COLORS[pt.name] || '#94a3b8'} />
                         ))}
                       </Bar>
                     </BarChart>
@@ -1837,12 +1842,12 @@ export default function Dashboard() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: BLUE }} />{nameA}</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: STORE_B_COLOR }} />{nameB}</div>
                     </>
-                  ) : [{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
-                    const pt = data.productTypes.find(p => p.name === t.name)
+                  ) : PTYPES.map(name => {
+                    const pt = data.productTypes.find(p => p.name === name)
                     return pt ? (
-                      <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
-                        <div style={{ width: 8, height: 8, borderRadius: 2, background: t.color }} />
-                        {t.name} · {fmtNum(pt.orders)} units
+                      <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                        <div style={{ width: 8, height: 8, borderRadius: 2, background: PTYPE_COLORS[name] || '#94a3b8' }} />
+                        {name} · {fmtNum(pt.orders)} units
                       </div>
                     ) : null
                   })}
@@ -2344,7 +2349,7 @@ export default function Dashboard() {
                         <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                         <XAxis dataKey="day" tick={{ fontSize: 12, fill: T.MUTED }} />
                         <YAxis tick={{ fontSize: 11, fill: T.MUTED }} />
-                        <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
+                        <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Sales']} />
                         <Bar dataKey="value" radius={[4,4,0,0]}>
                           {td.dowTotals.map((d, i) => <Cell key={i} fill={d.value === tdDowMax ? tdColor : (tdColor === STORE_B_COLOR ? '#ddd6fe' : '#bfdbfe')} />)}
                         </Bar>
