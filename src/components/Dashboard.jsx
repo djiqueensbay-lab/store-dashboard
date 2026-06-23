@@ -2135,30 +2135,81 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Traffic prose summary */}
+                    {/* Traffic summary rows */}
                     {(() => {
                       const cells = []
                       activeHeatData.heatmap.forEach((row, d) => row.forEach((v, h) => { if (v > 0) cells.push({ d, h, v }) }))
                       cells.sort((a, b) => b.v - a.v)
                       const top3 = cells.slice(0, 3)
-                      const slowCells = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v)
-                      const slowSlot = slowCells[0]
+                      const slowSlot = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v)[0]
                       const topDates = [...activeHeatData.trend].sort((a, b) => b.orders - a.orders).slice(0, 3)
                       const wrNum = parseFloat(activeHeatData.weekendRatio)
-                      const weekendNote = !isNaN(wrNum)
-                        ? wrNum >= 1.2 ? `Weekends are significantly busier — ${wrNum}× the weekday average.`
-                          : wrNum <= 0.85 ? `Weekdays actually outperform weekends (${wrNum}× ratio).`
-                          : `Weekend and weekday traffic are roughly equal (${wrNum}×).`
-                        : ''
-                      const peakList = top3.map(c => `${DAYS[c.d]} ${fmtHour(c.h)}–${fmtHour(c.h+1)} (${c.v} orders)`).join(', ')
-                      const dateList = topDates.map(d => `${d.fullDate || d.date} (${Math.abs(d.orders)} orders, ${fmtMYR(d.revenue)})`).join('; ')
-                      const slowNote = slowSlot ? `The quietest in-store hour is ${DAYS[slowSlot.d]} ${fmtHour(slowSlot.h)}–${fmtHour(slowSlot.h+1)} with only ${slowSlot.v} order${slowSlot.v !== 1 ? 's' : ''} — consider using this window for stock replenishment or team training.` : ''
+                      const isB = activeHeatColor === STORE_B_COLOR
+                      const accent = isB ? STORE_B_COLOR : BLUE
+                      const bg = isB ? '#faf5ff' : '#f8faff'
+                      const bdr = isB ? '#e9d5ff' : '#e0eaff'
+
+                      const weekendTag = !isNaN(wrNum)
+                        ? wrNum >= 1.2 ? { label: `${wrNum}× weekday avg`, color: GREEN }
+                          : wrNum <= 0.85 ? { label: `${wrNum}× (weekdays lead)`, color: ORANGE }
+                          : { label: `${wrNum}× (balanced)`, color: T.MUTED }
+                        : null
+
+                      const Row = ({ icon, label, children }) => (
+                        <div style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: `1px solid ${bdr}` }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>{icon}</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>{label}</div>
+                            <div style={{ fontSize: 13, color: T.TEXT, lineHeight: 1.5 }}>{children}</div>
+                          </div>
+                        </div>
+                      )
+
                       return (
-                        <div style={{ marginTop: 16, padding: '14px 16px', background: activeHeatColor === STORE_B_COLOR ? '#faf5ff' : '#f0f7ff', borderRadius: 10, border: `1px solid ${activeHeatColor === STORE_B_COLOR ? '#e9d5ff' : '#dbeafe'}` }}>
-                          <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 700, color: activeHeatColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Traffic summary</p>
-                          <p style={{ margin: 0, fontSize: 13, color: T.TEXT, lineHeight: 1.65 }}>
-                            Peak traffic falls on <strong>{peakList}</strong>. {weekendNote} {slowNote} The top trading dates were <strong>{dateList}</strong>.
-                          </p>
+                        <div style={{ marginTop: 16, background: bg, borderRadius: 12, border: `1px solid ${bdr}`, overflow: 'hidden' }}>
+                          <div style={{ padding: '10px 16px 0', borderBottom: `1px solid ${bdr}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Traffic summary</span>
+                          </div>
+                          <div style={{ padding: '0 16px' }}>
+                            <Row icon="🔥" label="Peak hours">
+                              {top3.map((c, i) => (
+                                <span key={i}>
+                                  {i > 0 && <span style={{ color: T.MUTED, margin: '0 6px' }}>·</span>}
+                                  <strong>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h+1)}</strong>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} orders)</span>
+                                </span>
+                              ))}
+                            </Row>
+                            {weekendTag && (
+                              <Row icon="📅" label="Weekend vs weekday">
+                                Weekends bring <strong style={{ color: weekendTag.color }}>{weekendTag.label}</strong> —&nbsp;
+                                {wrNum >= 1.2 ? 'ideal for weekend promotions and extra staffing.'
+                                  : wrNum <= 0.85 ? 'focus weekday campaigns to drive more weekend footfall.'
+                                  : 'traffic is spread evenly throughout the week.'}
+                              </Row>
+                            )}
+                            {slowSlot && (
+                              <Row icon="😴" label="Slowest window">
+                                <strong>{DAYS[slowSlot.d]} {fmtHour(slowSlot.h)}–{fmtHour(slowSlot.h+1)}</strong>
+                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} order{slowSlot.v !== 1 ? 's' : ''})</span>
+                                <span style={{ color: T.MUTED }}> — use this gap for stock replenishment or team briefings.</span>
+                              </Row>
+                            )}
+                            <div style={{ display: 'flex', gap: 12, padding: '10px 0' }}>
+                              <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>📆</div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top trading dates</div>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  {topDates.map((d, i) => (
+                                    <div key={i} style={{ background: i === 0 ? accent : '#fff', border: `1px solid ${i === 0 ? accent : bdr}`, borderRadius: 8, padding: '5px 10px', fontSize: 12 }}>
+                                      <div style={{ fontWeight: 700, color: i === 0 ? '#fff' : T.TEXT }}>{d.fullDate || d.date}</div>
+                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       )
                     })()}
