@@ -977,6 +977,9 @@ export default function Dashboard() {
   const [targets, setTargets] = useState(() => {
     try { return JSON.parse(localStorage.getItem('storedash-targets') || '{}') } catch { return {} }
   })
+  const [uploadHistory, setUploadHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('storedash-history') || '[]') } catch { return [] }
+  })
   const [editingTargets, setEditingTargets] = useState(false)
   const [allProductSearch, setAllProductSearch] = useState('')
   const [selectedSalesman, setSelectedSalesman] = useState(null)
@@ -995,7 +998,22 @@ export default function Dashboard() {
   const handleFile = useCallback(file => {
     if (!file) return
     setError(null); setFileName(file.name)
-    parseFile(file, setRawData, setError)
+    parseFile(file, parsed => {
+      setRawData(parsed)
+      const entry = {
+        filename: file.name,
+        outlet: parsed.meta?.outlet || '',
+        period: parsed.meta?.period || '',
+        kassieTotal: parsed.meta?.kassieTotal || null,
+        totalTx: parsed.meta?.totalTx || null,
+        uploadedAt: new Date().toISOString(),
+      }
+      setUploadHistory(prev => {
+        const next = [entry, ...prev.filter(h => h.filename !== file.name)].slice(0, 5)
+        localStorage.setItem('storedash-history', JSON.stringify(next))
+        return next
+      })
+    }, setError)
   }, [])
 
   const handleCompareFile = useCallback(file => {
@@ -1234,8 +1252,10 @@ export default function Dashboard() {
           <>
             <div style={{ marginBottom: '1.5rem' }}>
               <h1 style={{ fontSize: 26, fontWeight: 700, margin: '0 0 6px', color: T.TEXT }}>Store Dashboard</h1>
-              <p style={{ color: T.MUTED, fontSize: 14 }}>Drop your CustomerPurchaseListing CSV to get started</p>
+              <p style={{ color: T.MUTED, fontSize: 14 }}>Upload your Kassie Customer Purchase Listing CSV to analyse sales</p>
             </div>
+
+            {/* Drop zone */}
             <div
               onDragOver={e => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
@@ -1243,28 +1263,77 @@ export default function Dashboard() {
               onClick={() => fileRef.current.click()}
               style={{
                 border: `2px dashed ${dragging ? BLUE : T.BORDER_STRONG}`,
-                borderRadius: 16, padding: '4rem 2rem', textAlign: 'center', cursor: 'pointer',
+                borderRadius: 16, padding: '3rem 2rem', textAlign: 'center', cursor: 'pointer',
                 background: dragging ? '#eff6ff' : T.CARD,
-                transition: 'all 0.2s', marginBottom: '1.5rem',
+                transition: 'all 0.2s', marginBottom: '1rem',
                 boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
               }}
             >
               <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
-              <div style={{ fontSize: 44, marginBottom: 14 }}>📂</div>
-              <p style={{ fontWeight: 600, fontSize: 16, margin: '0 0 6px', color: T.TEXT }}>Drop your CSV file here</p>
-              <p style={{ color: T.MUTED, fontSize: 13, margin: '0 0 1.5rem' }}>or click to browse</p>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📂</div>
+              <p style={{ fontWeight: 600, fontSize: 16, margin: '0 0 4px', color: T.TEXT }}>Drop your CSV file here</p>
+              <p style={{ color: T.MUTED, fontSize: 13, margin: '0 0 1.25rem' }}>or click to browse</p>
               <button onClick={e => { e.stopPropagation(); loadDemo() }}
                 style={{ padding: '9px 22px', borderRadius: 9, cursor: 'pointer', fontSize: 13, border: `1px solid ${BLUE}`, background: '#eff6ff', color: BLUE, fontWeight: 600 }}>
                 ✨ Try with demo data
               </button>
             </div>
+
+            {/* Kassie export tip */}
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12, padding: '12px 16px', marginBottom: '1rem', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>💡</span>
+              <div>
+                <p style={{ fontWeight: 600, fontSize: 13, color: '#92400e', margin: '0 0 4px' }}>Kassie Export Tip — to match Branch/Outlet Net Sales</p>
+                <p style={{ fontSize: 12, color: '#78350f', margin: '0 0 4px' }}>Go to <strong>Customer Report → Customer Purchase Listing</strong>, then:</p>
+                <p style={{ fontSize: 12, color: '#78350f', margin: 0 }}>
+                  ☑ Uncheck <strong>"Display invoices with registered Customer Only"</strong> — this includes walk-in sales that are missing otherwise
+                </p>
+              </div>
+            </div>
+
+            {/* Recent history */}
+            {uploadHistory.length > 0 && (
+              <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+                <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 10px', color: T.TEXT }}>🕐 Recent uploads</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {uploadHistory.map((h, i) => {
+                    const ago = (() => {
+                      const diff = Math.floor((Date.now() - new Date(h.uploadedAt)) / 1000)
+                      if (diff < 60) return 'just now'
+                      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+                      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+                      return `${Math.floor(diff / 86400)}d ago`
+                    })()
+                    return (
+                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: T.BG, borderRadius: 8, border: `1px solid ${T.BORDER}` }}>
+                        <span style={{ fontSize: 16 }}>📄</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontSize: 12, fontWeight: 600, color: T.TEXT, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.filename}</p>
+                          <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>
+                            {h.outlet && <span>{h.outlet} · </span>}
+                            {h.period && <span>{h.period} · </span>}
+                            {h.totalTx && <span>{h.totalTx} tx</span>}
+                          </p>
+                        </div>
+                        {h.kassieTotal != null && (
+                          <span style={{ fontSize: 12, fontWeight: 700, color: GREEN, whiteSpace: 'nowrap' }}>{fmtMYRAbbr(h.kassieTotal)}</span>
+                        )}
+                        <span style={{ fontSize: 11, color: T.MUTED, whiteSpace: 'nowrap' }}>{ago}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Supported formats */}
             <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: '1rem 1.25rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
               <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 4px', color: T.TEXT }}>Supported formats</p>
               <p style={{ fontSize: 12, color: T.MUTED, margin: '0 0 12px' }}>Auto-detected — just drop the file</p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ background: T.BG, border: `1px solid ${T.BORDER}`, borderRadius: 8, padding: '10px 12px', flex: 1 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: BLUE, margin: '0 0 4px' }}>POS Report (CustomerPurchaseListing)</p>
-                  <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>Your store export — works as-is, metadata rows auto-skipped</p>
+                  <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>Your Kassie export — metadata rows auto-skipped</p>
                 </div>
                 <div style={{ background: T.BG, border: `1px solid ${T.BORDER}`, borderRadius: 8, padding: '10px 12px', flex: 1 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: T.MUTED, margin: '0 0 4px' }}>Simple CSV</p>
