@@ -32,6 +32,10 @@ const T = {
 }
 
 function fmtMYR(n) {
+  const abs = Math.abs(n)
+  return (n < 0 ? '-' : '') + 'RM' + abs.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtMYRAbbr(n) {
   if (n >= 1000000) return 'RM' + (n / 1000000).toFixed(2) + 'M'
   if (n >= 1000) return 'RM' + (n / 1000).toFixed(1) + 'k'
   return 'RM' + Math.round(n).toLocaleString()
@@ -151,7 +155,7 @@ function normalizeRow(r) {
       revenue: sub, isReturn, rsp, discount: disc,
       category: r['Category Description'] || r['Product Category 1'] || 'Other',
       product: r['Product Description'] || 'Unknown',
-      payment: r['Payment Modes'] || 'Unknown',
+      payment: (r['Payment Modes'] || 'Unknown').replace(/^Payment\s*X$/i, 'DPay'),
       salesman: r['Salesman'] || 'Unknown',
       brand: r['Brand'] || 'Other',
       gender: r['Customer Gender'] || 'Unknown',
@@ -389,13 +393,20 @@ function SectionLabel({ children }) {
   )
 }
 
-function HeatmapCell({ value, max }) {
+function HeatmapCell({ value, max, isTotal }) {
   const t = max > 0 ? value / max : 0
   return (
     <div title={`${Math.round(value)} orders`} style={{
-      flex: 1, height: 22, borderRadius: 2,
-      background: t === 0 ? '#f1f5f9' : `rgba(37,99,235,${0.08 + t * 0.82})`,
-    }} />
+      flex: 1, height: 26, borderRadius: 2, minWidth: 0,
+      background: isTotal ? 'transparent' : t === 0 ? '#f1f5f9' : `rgba(37,99,235,${0.08 + t * 0.82})`,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {value > 0 && (
+        <span style={{ fontSize: 8, fontWeight: 600, lineHeight: 1, color: isTotal ? T.MUTED : t > 0.55 ? '#fff' : '#475569', pointerEvents: 'none' }}>
+          {Math.round(value)}
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -746,7 +757,7 @@ export default function Dashboard() {
                     <LineChart data={comparisonTrend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.MUTED }} interval={Math.max(0, Math.floor(comparisonTrend.length / 7))} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                       <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Line type="monotone" dataKey="storeA" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                       <Line type="monotone" dataKey="storeB" stroke={STORE_B_COLOR} strokeWidth={2} dot={false} activeDot={{ r: 4 }} strokeDasharray="5 3" />
@@ -760,7 +771,7 @@ export default function Dashboard() {
                     <BarChart data={categoryComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                       <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
@@ -792,7 +803,7 @@ export default function Dashboard() {
                     <BarChart data={monthlyComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                       <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
@@ -879,7 +890,7 @@ export default function Dashboard() {
                 <LineChart data={trend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: T.MUTED }} interval={Math.max(0, Math.floor(trend.length / 7))} />
-                  <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                  <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                   <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                   <Line type="monotone" dataKey="revenue" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                 </LineChart>
@@ -957,7 +968,7 @@ export default function Dashboard() {
                     <BarChart data={monthlyComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                       <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
@@ -966,7 +977,7 @@ export default function Dashboard() {
                     <BarChart data={data.monthlyBreakdown} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                       <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                       <Bar dataKey="revenue" radius={[4,4,0,0]}>
                         {data.monthlyBreakdown.map((m, i) => (
@@ -996,7 +1007,7 @@ export default function Dashboard() {
                   <BarChart data={data.productTypes} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                     <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
-                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                     <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
                       formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
                     <Bar dataKey="revenue" radius={[4,4,0,0]}>
@@ -1122,7 +1133,7 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height={180}>
                   <BarChart data={data.payments} layout="vertical" margin={{ top: 0, right: 8, bottom: 0, left: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 10, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                     <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} width={80} tickFormatter={v => v.length > 16 ? v.slice(0, 14) + '…' : v} />
                     <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                     <Bar dataKey="revenue" radius={[0,4,4,0]}>
@@ -1271,21 +1282,39 @@ export default function Dashboard() {
                 {[0.08,0.3,0.5,0.7,0.9].map(o => <div key={o} style={{ width: 14, height: 14, borderRadius: 2, background: o === 0.08 ? '#f1f5f9' : `rgba(37,99,235,${o})` }} />)}
                 <span>High</span>
               </div>
-              <div style={{ overflowX: 'auto' }}>
-                <div style={{ minWidth: 560 }}>
-                  <div style={{ display: 'flex', marginBottom: 4, paddingLeft: 36 }}>
-                    {HOURS.filter(h => h % 3 === 0).map(h => (
-                      <div key={h} style={{ flex: '3 0 0', fontSize: 10, color: T.MUTED }}>{fmtHour(h)}</div>
-                    ))}
-                  </div>
-                  {data.heatmap.map((row, d) => (
-                    <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 2, marginBottom: 3 }}>
-                      <span style={{ width: 32, fontSize: 11, color: T.MUTED, flexShrink: 0 }}>{DAYS[d]}</span>
-                      {row.map((val, h) => <HeatmapCell key={h} value={val} max={heatmapMax} />)}
+              {(() => {
+                const hourTotals = HOURS.map(h => data.heatmap.reduce((s, row) => s + row[h], 0))
+                const rowTotals = data.heatmap.map(row => row.reduce((a, b) => a + b, 0))
+                const grandTotal = rowTotals.reduce((a, b) => a + b, 0)
+                const colMax = Math.max(...hourTotals)
+                return (
+                  <div style={{ overflowX: 'auto' }}>
+                    <div style={{ minWidth: 600 }}>
+                      {/* Hour labels */}
+                      <div style={{ display: 'flex', marginBottom: 4, paddingLeft: 36 }}>
+                        {HOURS.filter(h => h % 3 === 0).map(h => (
+                          <div key={h} style={{ flex: '3 0 0', fontSize: 10, color: T.MUTED }}>{fmtHour(h)}</div>
+                        ))}
+                        <div style={{ width: 42, fontSize: 10, color: T.MUTED, textAlign: 'right', flexShrink: 0 }}>Total</div>
+                      </div>
+                      {/* Day rows */}
+                      {data.heatmap.map((row, d) => (
+                        <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 2, marginBottom: 3 }}>
+                          <span style={{ width: 32, fontSize: 11, color: T.MUTED, flexShrink: 0 }}>{DAYS[d]}</span>
+                          {row.map((val, h) => <HeatmapCell key={h} value={val} max={heatmapMax} />)}
+                          <span style={{ width: 40, fontSize: 10, fontWeight: 600, color: BLUE, textAlign: 'right', flexShrink: 0, paddingLeft: 4 }}>{rowTotals[d]}</span>
+                        </div>
+                      ))}
+                      {/* Hour totals row */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 4, borderTop: `1px solid ${T.BORDER}`, paddingTop: 4 }}>
+                        <span style={{ width: 32, fontSize: 10, color: T.MUTED, flexShrink: 0 }}>Total</span>
+                        {hourTotals.map((val, h) => <HeatmapCell key={h} value={val} max={colMax} isTotal />)}
+                        <span style={{ width: 40, fontSize: 10, fontWeight: 700, color: T.TEXT, textAlign: 'right', flexShrink: 0, paddingLeft: 4 }}>{grandTotal}</span>
+                      </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
+                )
+              })()}
             </Card>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 12, marginTop: 12 }}>
