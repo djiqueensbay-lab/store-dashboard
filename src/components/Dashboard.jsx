@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react'
 import Papa from 'papaparse'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+const MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 const HOURS = Array.from({ length: 24 }, (_, i) => i)
 const BLUE = '#2563eb'
 const GREEN = '#059669'
@@ -32,6 +33,10 @@ const T = {
 }
 
 function fmtMYR(n) {
+  const abs = Math.abs(n)
+  return (n < 0 ? '-' : '') + 'RM' + abs.toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+function fmtMYRAbbr(n) {
   if (n >= 1000000) return 'RM' + (n / 1000000).toFixed(2) + 'M'
   if (n >= 1000) return 'RM' + (n / 1000).toFixed(1) + 'k'
   return 'RM' + Math.round(n).toLocaleString()
@@ -54,6 +59,14 @@ function fmtMonth(key) {
 function seedRandom(d, h) {
   const x = Math.sin(d * 13 + h * 7 + 42) * 10000
   return x - Math.floor(x)
+}
+
+function classifyProductType(product) {
+  const p = (product || '').toUpperCase()
+  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b/.test(p) ||
+      /\bDJI\s+AIR\b/.test(p)) return 'Drone'
+  if (/\bOSMO\b|\bRS\s*[C234]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b/.test(p)) return 'Handheld'
+  return 'Other'
 }
 
 function generateDemoData(seed = 0) {
@@ -132,10 +145,13 @@ function normalizeRow(r) {
       isoDate = datePart
     }
     const hour = timePart ? parseInt(timePart.split(':')[0]) : 12
+    const qty = parseFloat(r['Qty']) || 1
     const sp = parseFloat(r['Selling Price(MYR)']) || 0
-    const rsp = parseFloat(r['RSP At Creation(MYR)']) || Math.abs(sp)
+    // RSP = original list price before any discount
+    const rsp = parseFloat(r['RSP At Creation(MYR)']) || parseFloat(r['RSP(MYR)']) || Math.abs(sp)
     const disc = parseFloat(r['Discount Amount(MYR)']) || 0
-    const sub = parseFloat(r['Sub Total(MYR)']) || parseFloat(r['Total(MYR)']) || sp
+    // Revenue = Net Sales after discount. Try explicit net field first, then Sub Total, then compute.
+    const sub = parseFloat(r['Net Sales(MYR)']) || parseFloat(r['Sub Total(MYR)']) || parseFloat(r['Total(MYR)']) || ((sp - disc) * qty)
     const isReturn = sub < 0
     return {
       date: isoDate, hour: isNaN(hour) ? 12 : hour,
@@ -143,7 +159,7 @@ function normalizeRow(r) {
       revenue: sub, isReturn, rsp, discount: disc,
       category: r['Category Description'] || r['Product Category 1'] || 'Other',
       product: r['Product Description'] || 'Unknown',
-      payment: r['Payment Modes'] || 'Unknown',
+      payment: (r['Payment Modes'] || 'Unknown').replace(/^Payment\s*X$/i, 'DPay'),
       salesman: r['Salesman'] || 'Unknown',
       brand: r['Brand'] || 'Other',
       gender: r['Customer Gender'] || 'Unknown',
@@ -161,15 +177,25 @@ function normalizeRow(r) {
   }
 }
 
-function processData(rows, meta = {}) {
-  const normalized = rows.map(normalizeRow).filter(r => r.date)
+function processData(rows, meta = {}, dateRange = null) {
+  const allNormalized = rows.map(normalizeRow).filter(r => r.date)
+
+  // Filter by exact date range when set
+  let normalized = allNormalized
+  if (dateRange?.start && dateRange?.end) {
+    normalized = allNormalized.filter(r => r.date >= dateRange.start && r.date <= dateRange.end)
+  }
+
   const revenueByDate = {}, ordersByDate = {}, revenueByMonth = {}
   const heatmap = Array.from({ length: 7 }, () => Array(24).fill(0))
-  const categoryRev = {}, productRev = {}, productOrders = {}
-  const salesmanRev = {}, salesmanOrders = {}
+  const categoryRev = {}, productRev = {}, productOrders = {}, productUnitsSold = {}
+  const productTypeRev = {}, productTypeOrders = {}
+  const salesmanRev = {}, salesmanOrders = {}, salesmanProducts = {}
+  const salesmanTxCount = {}, salesmanReturnCount = {}, salesmanReturnRev = {}
+  const productTxCount = {}, productReturnCount = {}, productReturnRev = {}
   const paymentRev = {}, paymentCount = {}
   const brandRev = {}, brandOrders = {}
-  const genderCount = {}, ageCount = {}
+  const genderCount = {}, ageOrders = {}
   let totalDiscount = 0, totalRSP = 0, totalRevenue = 0, totalOrders = 0
   let grossRevenue = 0, returnRevenue = 0, returnCount = 0
 
@@ -188,8 +214,16 @@ function processData(rows, meta = {}) {
     categoryRev[category] = (categoryRev[category] || 0) + revenue
     productRev[product] = (productRev[product] || 0) + revenue
     productOrders[product] = (productOrders[product] || 0) + orders
+    if (!isReturn) productUnitsSold[product] = (productUnitsSold[product] || 0) + Math.abs(orders)
+    const pType = classifyProductType(product)
+    productTypeRev[pType] = (productTypeRev[pType] || 0) + revenue
+    productTypeOrders[pType] = (productTypeOrders[pType] || 0) + Math.abs(orders)
     salesmanRev[salesman] = (salesmanRev[salesman] || 0) + revenue
     salesmanOrders[salesman] = (salesmanOrders[salesman] || 0) + orders
+    if (!isReturn) {
+      if (!salesmanProducts[salesman]) salesmanProducts[salesman] = {}
+      salesmanProducts[salesman][product] = (salesmanProducts[salesman][product] || 0) + Math.abs(orders)
+    }
     if (!isReturn) {
       paymentRev[payment] = (paymentRev[payment] || 0) + revenue
       paymentCount[payment] = (paymentCount[payment] || 0) + orders
@@ -197,13 +231,22 @@ function processData(rows, meta = {}) {
     brandRev[brand] = (brandRev[brand] || 0) + revenue
     brandOrders[brand] = (brandOrders[brand] || 0) + orders
     genderCount[gender] = (genderCount[gender] || 0) + 1
-    ageCount[age_group] = (ageCount[age_group] || 0) + 1
+    ageOrders[age_group] = (ageOrders[age_group] || 0) + Math.abs(orders)
     totalDiscount += discount
     totalRSP += rsp * Math.abs(orders)
     totalRevenue += revenue
     totalOrders += Math.abs(orders)
-    if (isReturn) { returnRevenue += Math.abs(revenue); returnCount++ }
-    else grossRevenue += revenue
+
+    // Return tracking per product and salesman
+    productTxCount[product] = (productTxCount[product] || 0) + 1
+    salesmanTxCount[salesman] = (salesmanTxCount[salesman] || 0) + 1
+    if (isReturn) {
+      returnRevenue += Math.abs(revenue); returnCount++
+      productReturnCount[product] = (productReturnCount[product] || 0) + 1
+      productReturnRev[product] = (productReturnRev[product] || 0) + Math.abs(revenue)
+      salesmanReturnCount[salesman] = (salesmanReturnCount[salesman] || 0) + 1
+      salesmanReturnRev[salesman] = (salesmanReturnRev[salesman] || 0) + Math.abs(revenue)
+    } else grossRevenue += revenue
   })
 
   const sortedDates = Object.keys(revenueByDate).sort()
@@ -233,12 +276,37 @@ function processData(rows, meta = {}) {
   const returnRate = (totalOrders + returnCount) > 0 ? returnCount / (totalOrders + returnCount) * 100 : 0
 
   const categories = Object.entries(categoryRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue) }))
+  const productTypes = ['Drone', 'Handheld', 'Other']
+    .map(name => ({ name, revenue: Math.round(productTypeRev[name] || 0), orders: productTypeOrders[name] || 0 }))
+    .filter(p => p.revenue > 0)
   const topProducts = Object.entries(productRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: productOrders[name] || 0 }))
-  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0 }))
+  const allProducts = Object.entries(productUnitsSold).sort((a, b) => b[1] - a[1]).map(([name, units]) => ({ name, units, revenue: Math.round(productRev[name] || 0) }))
+  const salesmen = Object.entries(salesmanRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => {
+    const rc = salesmanReturnCount[name] || 0
+    const tx = salesmanTxCount[name] || 0
+    return {
+      name, revenue: Math.round(revenue), orders: salesmanOrders[name] || 0,
+      products: Object.entries(salesmanProducts[name] || {}).sort((a, b) => b[1] - a[1]).map(([product, units]) => ({ product, units })),
+      returnCount: rc, returnRevenue: Math.round(salesmanReturnRev[name] || 0),
+      returnRate: tx > 0 ? Math.round((rc / tx) * 100) : 0,
+    }
+  })
+  const topReturnedProducts = Object.entries(productReturnCount)
+    .map(([name, rc]) => {
+      const tx = productTxCount[name] || rc
+      return { name, returnCount: rc, returnRevenue: Math.round(productReturnRev[name] || 0), returnRate: Math.round((rc / tx) * 100) }
+    })
+    .sort((a, b) => b.returnCount - a.returnCount)
+    .slice(0, 8)
   const payments = Object.entries(paymentRev).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), count: paymentCount[name] || 0 }))
   const brands = Object.entries(brandRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: brandOrders[name] || 0 }))
   const genders = Object.entries(genderCount).map(([name, value]) => ({ name, value }))
-  const ageGroups = Object.entries(ageCount).sort((a, b) => b[1] - a[1]).map(([name, value]) => ({ name, value }))
+  const ageGroups = Object.entries(ageOrders)
+    .sort((a, b) => {
+      const order = ['Below 20', '20-29', '30-39', '40-49', '50 & Above']
+      return order.indexOf(a[0]) - order.indexOf(b[0])
+    })
+    .map(([name, value]) => ({ name, value }))
   const dowTotals = heatmap.map((row, d) => ({ day: DAYS[d], value: row.reduce((a, b) => a + b, 0) }))
 
   // Peak hour+day: single busiest heatmap cell
@@ -266,10 +334,11 @@ function processData(rows, meta = {}) {
 
   return {
     trend, totalRevenue, totalOrders, aov, growth, totalDiscount, rspGap,
-    categories, topProducts, salesmen, payments, brands, genders, ageGroups,
+    categories, productTypes, topProducts, allProducts, salesmen, payments, brands, genders, ageGroups,
     heatmap, dowTotals, peakHour: peakH, peakDay: peakD, slowHour: slowH, slowDay: slowD,
     weekendRatio, busiestDay, meta, grossRevenue, returnRevenue, returnCount, returnRate,
     momCurrent, momPrev, momChange, momCurrentLabel, momPrevLabel, monthlyBreakdown,
+    topReturnedProducts, totalRSP,
   }
 }
 
@@ -323,8 +392,268 @@ function exportCSV(data, fileName) {
   URL.revokeObjectURL(url)
 }
 
+function exportPDF(data, compareData, nameA, nameB, periodLabel) {
+  const fmtR = n => 'RM' + Math.abs(n).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const fmtN = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : Math.round(n).toString()
+  const genDate = new Date().toLocaleDateString('en-MY', { day: '2-digit', month: 'short', year: 'numeric' })
+
+  const css = `
+    @page { size: A4; margin: 14mm 16mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; color: #111827; font-size: 10pt; line-height: 1.45; background: #fff; }
+
+    /* ── Page header (repeats on every page) ── */
+    .page-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 6mm; border-bottom: 2.5pt solid #2563eb; margin-bottom: 6mm; }
+    .brand { font-size: 17pt; font-weight: 800; color: #2563eb; letter-spacing: -0.02em; }
+    .brand span { font-size: 10pt; font-weight: 400; color: #6b7280; margin-left: 8px; }
+    .store-pill { font-size: 9pt; font-weight: 600; padding: 3px 10px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; }
+    .pill-a { background: #eff6ff; color: #2563eb; border: 1pt solid #bfdbfe; }
+    .pill-b { background: #f5f3ff; color: #7c3aed; border: 1pt solid #ddd6fe; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+
+    /* ── Section heading ── */
+    .section { margin-top: 6mm; }
+    .section-title { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; color: #9ca3af; border-bottom: 0.75pt solid #e5e7eb; padding-bottom: 2mm; margin-bottom: 3.5mm; }
+
+    /* ── KPI grid ── */
+    .kpi-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3mm; margin-bottom: 4mm; }
+    .kpi { border: 0.75pt solid #e5e7eb; border-radius: 5pt; padding: 3mm 4mm; background: #fafafa; }
+    .kpi-label { font-size: 7.5pt; color: #6b7280; margin-bottom: 2px; }
+    .kpi-value { font-size: 14pt; font-weight: 700; line-height: 1.2; }
+    .kpi-delta { font-size: 7.5pt; color: #9ca3af; margin-top: 2px; }
+
+    /* ── Two-column layout ── */
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4mm; }
+
+    /* ── Tables ── */
+    table { width: 100%; border-collapse: collapse; font-size: 9pt; }
+    thead tr { background: #f4f6fb; }
+    th { padding: 2.5mm 3mm; text-align: left; font-size: 8pt; font-weight: 700; color: #374151; border-bottom: 1.5pt solid #e5e7eb; white-space: nowrap; }
+    td { padding: 2mm 3mm; border-bottom: 0.5pt solid #f1f5f9; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: none; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .bold { font-weight: 700; }
+    .blue { color: #2563eb; }
+    .purple { color: #7c3aed; }
+    .green { color: #059669; }
+    .red { color: #dc2626; }
+    .amber { color: #d97706; }
+    .muted { color: #6b7280; }
+
+    /* ── Delta badge ── */
+    .badge { display: inline-block; padding: 1px 5px; border-radius: 10px; font-size: 7.5pt; font-weight: 700; }
+    .badge-green { background: #dcfce7; color: #16a34a; }
+    .badge-red { background: #fef2f2; color: #dc2626; }
+
+    /* ── Page break ── */
+    .page-break { page-break-before: always; padding-top: 0; }
+
+    /* ── Footer ── */
+    .footer { margin-top: 8mm; padding-top: 3mm; border-top: 0.5pt solid #e5e7eb; display: flex; justify-content: space-between; font-size: 7.5pt; color: #9ca3af; }
+
+    /* ── Store divider ── */
+    .store-divider { border-left: 3pt solid; padding-left: 4mm; margin: 5mm 0 3mm; }
+    .divider-a { border-color: #2563eb; }
+    .divider-b { border-color: #7c3aed; }
+    .divider-title { font-size: 12pt; font-weight: 700; }
+    .divider-sub { font-size: 8.5pt; color: #6b7280; margin-top: 2px; }
+  `
+
+  const kpiGrid = (d, color) => [
+    ['Net Revenue', fmtR(d.totalRevenue), color, `${d.growth >= 0 ? '+' : ''}${d.growth.toFixed(1)}% period trend`],
+    ['Gross Revenue', fmtR(d.grossRevenue), '#111827', 'before returns'],
+    ['Return Revenue', fmtR(d.returnRevenue), '#dc2626', `${d.returnCount} transactions`],
+    ['Total Orders', fmtN(d.totalOrders), '#111827', 'units sold'],
+    ['Return Rate', d.returnRate.toFixed(1) + '%', d.returnRate < 5 ? '#059669' : '#dc2626', d.returnRate < 5 ? 'Healthy' : 'Monitor'],
+    ['Avg Order Value', fmtR(d.aov), '#111827', 'per transaction'],
+    ['Total Discount', fmtR(d.totalDiscount), '#d97706', `${d.totalRevenue > 0 ? ((d.totalDiscount / (d.totalRevenue + d.totalDiscount)) * 100).toFixed(1) : 0}% of gross`],
+    ['RSP Gap', fmtR(d.rspGap), '#dc2626', 'below RSP'],
+    ['MoM Change', (d.momChange >= 0 ? '+' : '') + d.momChange.toFixed(1) + '%', d.momChange >= 0 ? '#059669' : '#dc2626', `${d.momPrevLabel ? d.momPrevLabel + ' → ' + d.momCurrentLabel : 'current month'}`],
+  ].map(([lbl, val, c, delta]) =>
+    `<div class="kpi"><div class="kpi-label">${lbl}</div><div class="kpi-value" style="color:${c}">${val}</div><div class="kpi-delta">${delta}</div></div>`
+  ).join('')
+
+  const salesTable = (d, color) =>
+    `<table><thead><tr><th>#</th><th>Salesman</th><th class="num">Revenue</th><th class="num">Orders</th><th class="num">Products</th></tr></thead><tbody>
+    ${d.salesmen.map((s, i) => `<tr><td class="muted">${i + 1}</td><td class="${i === 0 ? 'bold' : ''}">${s.name}</td><td class="num ${i === 0 ? 'bold' : ''}" style="color:${i === 0 ? color : '#111827'}">${fmtR(s.revenue)}</td><td class="num muted">${fmtN(s.orders)}</td><td class="num muted">${s.products.length}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const prodTable = (d) =>
+    `<table><thead><tr><th>#</th><th>Product</th><th class="num">Revenue</th><th class="num">Orders</th></tr></thead><tbody>
+    ${d.topProducts.slice(0, 8).map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.orders)}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const payTable = (d) =>
+    `<table><thead><tr><th>Method</th><th class="num">Revenue</th><th class="num">Transactions</th></tr></thead><tbody>
+    ${d.payments.map(p => `<tr><td>${p.name}</td><td class="num">${fmtR(p.revenue)}</td><td class="num muted">${fmtN(p.count)}</td></tr>`).join('')}
+    </tbody></table>`
+
+  const monthTable = (d) =>
+    `<table><thead><tr><th>Month</th><th class="num">Revenue</th></tr></thead><tbody>
+    ${d.monthlyBreakdown.map((m, i, arr) => {
+      const isCurrent = m.key === d.momCurrentLabel
+      return `<tr><td${isCurrent ? ' class="bold"' : ''}>${m.label}${isCurrent ? ' ✦' : ''}</td><td class="num${isCurrent ? ' bold blue' : ''}">${fmtR(m.revenue)}</td></tr>`
+    }).join('')}
+    </tbody></table>`
+
+  const pageHeader = () => `
+    <div class="page-header">
+      <div>
+        <div class="brand">StoreDash <span>Sales Report</span></div>
+        <div style="font-size:8.5pt;color:#6b7280;margin-top:3px">Period: <strong>${periodLabel}</strong> · Generated: ${genDate}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <span class="store-pill pill-a"><span class="dot" style="background:#2563eb"></span>${nameA}</span>
+        ${compareData ? `<span style="font-size:9pt;color:#9ca3af">vs</span><span class="store-pill pill-b"><span class="dot" style="background:#7c3aed"></span>${nameB}</span>` : ''}
+      </div>
+    </div>`
+
+  const footer = (page, total) => `
+    <div class="footer">
+      <span>StoreDash · Confidential</span>
+      <span>Page ${page} of ${total}</span>
+    </div>`
+
+  const totalPages = compareData ? 4 : 2
+
+  // Page 1: KPIs + Summary
+  const page1 = `
+    ${pageHeader()}
+    <div class="store-divider divider-a">
+      <div class="divider-title" style="color:#2563eb">${nameA}</div>
+      <div class="divider-sub">${data.meta?.outlet || ''} · ${data.meta?.period || periodLabel}</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Performance Summary</div>
+      <div class="kpi-grid">${kpiGrid(data, '#2563eb')}</div>
+    </div>
+    <div class="two-col" style="margin-top:5mm">
+      <div class="section">
+        <div class="section-title">Monthly Breakdown</div>
+        ${monthTable(data)}
+      </div>
+      <div class="section">
+        <div class="section-title">Payment Methods</div>
+        ${payTable(data)}
+      </div>
+    </div>
+    ${footer(1, totalPages)}`
+
+  // Page 2: Products + Staff
+  const page2 = `
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-a">
+      <div class="divider-title" style="color:#2563eb">${nameA}</div>
+    </div>
+    <div class="two-col" style="margin-top:4mm">
+      <div class="section">
+        <div class="section-title">Salesman Performance</div>
+        ${salesTable(data, '#2563eb')}
+      </div>
+      <div class="section">
+        <div class="section-title">Top Products</div>
+        ${prodTable(data)}
+      </div>
+    </div>
+    ${footer(2, totalPages)}
+    </div>`
+
+  // Page 3 (compare only): Store B KPIs + Monthly + Payments
+  const page3 = compareData ? `
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-b">
+      <div class="divider-title" style="color:#7c3aed">${nameB}</div>
+      <div class="divider-sub">${compareData.meta?.outlet || ''} · ${compareData.meta?.period || periodLabel}</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Performance Summary</div>
+      <div class="kpi-grid">${kpiGrid(compareData, '#7c3aed')}</div>
+    </div>
+    <div class="two-col" style="margin-top:5mm">
+      <div class="section">
+        <div class="section-title">Monthly Breakdown</div>
+        ${monthTable(compareData)}
+      </div>
+      <div class="section">
+        <div class="section-title">Payment Methods</div>
+        ${payTable(compareData)}
+      </div>
+    </div>
+    ${footer(3, totalPages)}
+    </div>` : ''
+
+  // Page 4 (compare only): Store B Staff + Comparison table
+  const page4 = compareData ? (() => {
+    const metrics = [
+      ['Net Revenue', data.totalRevenue, compareData.totalRevenue, fmtR],
+      ['Gross Revenue', data.grossRevenue, compareData.grossRevenue, fmtR],
+      ['Return Revenue', data.returnRevenue, compareData.returnRevenue, fmtR],
+      ['Total Orders', data.totalOrders, compareData.totalOrders, fmtN],
+      ['Avg Order Value', data.aov, compareData.aov, fmtR],
+      ['Return Rate (%)', data.returnRate, compareData.returnRate, v => v.toFixed(1) + '%'],
+      ['Total Discount', data.totalDiscount, compareData.totalDiscount, fmtR],
+      ['RSP Gap', data.rspGap, compareData.rspGap, fmtR],
+      ['MoM Change (%)', data.momChange, compareData.momChange, v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'],
+    ]
+    const compRows = metrics.map(([lbl, a, b, fmt]) => {
+      const delta = b !== 0 ? ((a - b) / Math.abs(b)) * 100 : 0
+      const cls = delta >= 0 ? 'badge-green' : 'badge-red'
+      return `<tr><td>${lbl}</td><td class="num blue bold">${fmt(a)}</td><td class="num purple bold">${fmt(b)}</td><td class="num"><span class="badge ${cls}">${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%</span></td></tr>`
+    }).join('')
+    return `
+    <div class="page-break">
+    ${pageHeader()}
+    <div class="store-divider divider-b">
+      <div class="divider-title" style="color:#7c3aed">${nameB}</div>
+    </div>
+    <div class="two-col" style="margin-top:4mm">
+      <div class="section">
+        <div class="section-title">Salesman Performance</div>
+        ${salesTable(compareData, '#7c3aed')}
+      </div>
+      <div class="section">
+        <div class="section-title">Top Products</div>
+        ${prodTable(compareData)}
+      </div>
+    </div>
+    <div class="section" style="margin-top:6mm">
+      <div class="section-title">Side-by-side Comparison — ${nameA} vs ${nameB}</div>
+      <table>
+        <thead><tr><th>Metric</th><th class="num" style="color:#2563eb">${nameA}</th><th class="num" style="color:#7c3aed">${nameB}</th><th class="num">A vs B</th></tr></thead>
+        <tbody>${compRows}</tbody>
+      </table>
+    </div>
+    ${footer(4, totalPages)}
+    </div>`
+  })() : ''
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StoreDash Report — ${nameA}${compareData ? ' vs ' + nameB : ''} — ${genDate}</title>
+<style>${css}</style>
+</head>
+<body>
+${page1}
+${page2}
+${page3}
+${page4}
+</body>
+</html>`
+
+  const w = window.open('', '_blank')
+  w.document.write(html)
+  w.document.close()
+  setTimeout(() => w.print(), 600)
+}
+
 const TT = { background: T.TOOLTIP_BG, border: '1px solid rgba(255,255,255,0.15)', borderRadius: 8, color: '#f9fafb', fontSize: 12, padding: '8px 12px' }
 const TC = false // disable hover cursor rectangle on bar charts
+const TS = { itemStyle: { color: '#f9fafb' }, labelStyle: { color: '#d1d5db' } }
 
 function KPI({ icon, label, value, delta, color, small }) {
   return (
@@ -350,6 +679,214 @@ function Card({ title, children, style, action }) {
   )
 }
 
+function fmtDateLabel(d) {
+  if (!d) return ''
+  const [y, m, dd] = d.split('-')
+  return `${dd}-${MONTHS_SHORT[parseInt(m) - 1]}-${y}`
+}
+
+function addDays(dateStr, n) {
+  const d = new Date(dateStr)
+  d.setDate(d.getDate() + n)
+  return d.toISOString().slice(0, 10)
+}
+
+function formatRangeLabel(dateRange) {
+  if (!dateRange) return 'All time'
+  return `${fmtDateLabel(dateRange.start)} – ${fmtDateLabel(dateRange.end)}`
+}
+
+function DateRangePicker({ value, onChange, onClose }) {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const initDate = value?.start ? new Date(value.start) : new Date()
+  const [viewYear, setViewYear] = useState(initDate.getFullYear())
+  const [viewMonth, setViewMonth] = useState(initDate.getMonth())
+  const [selStart, setSelStart] = useState(value?.start ?? null)
+  const [selEnd, setSelEnd] = useState(value?.end ?? null)
+  const [picking, setPicking] = useState(false)
+  const [hover, setHover] = useState(null)
+
+  const presets = [
+    { label: 'Today', fn: () => ({ start: todayStr, end: todayStr }) },
+    { label: 'Yesterday', fn: () => { const y = addDays(todayStr, -1); return { start: y, end: y } } },
+    { label: 'Last 7 Days', fn: () => ({ start: addDays(todayStr, -6), end: todayStr }) },
+    { label: 'This Month', fn: () => {
+      const d = new Date()
+      return { start: `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`, end: todayStr }
+    }},
+    { label: 'Last 3 Months', fn: () => ({ start: addDays(todayStr, -89), end: todayStr }) },
+    { label: 'Last 6 Months', fn: () => ({ start: addDays(todayStr, -179), end: todayStr }) },
+    { label: 'Last 9 Months', fn: () => ({ start: addDays(todayStr, -269), end: todayStr }) },
+    { label: 'Last 2 Years', fn: () => ({ start: addDays(todayStr, -729), end: todayStr }) },
+    { label: 'All time', fn: () => null },
+  ]
+
+  const applyPreset = (fn) => {
+    const r = fn()
+    if (!r) { setSelStart(null); setSelEnd(null); setPicking(false); return }
+    setSelStart(r.start); setSelEnd(r.end); setPicking(false)
+    const d = new Date(r.start); setViewYear(d.getFullYear()); setViewMonth(d.getMonth())
+  }
+
+  const handleDayClick = (dateStr) => {
+    if (!picking) { setSelStart(dateStr); setSelEnd(null); setPicking(true) }
+    else {
+      const [s, e] = dateStr < selStart ? [dateStr, selStart] : [selStart, dateStr]
+      setSelStart(s); setSelEnd(e); setPicking(false); setHover(null)
+    }
+  }
+
+  const isPresetActive = (fn) => {
+    const r = fn()
+    return r ? r.start === selStart && r.end === selEnd : !selStart && !selEnd
+  }
+
+  const rightMonth = (viewMonth + 1) % 12
+  const rightYear = viewMonth === 11 ? viewYear + 1 : viewYear
+
+  const renderCal = (year, month) => {
+    const firstDow = new Date(year, month, 1).getDay()
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const cells = []
+    for (let i = 0; i < firstDow; i++) cells.push(null)
+    for (let d = 1; d <= daysInMonth; d++)
+      cells.push(`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`)
+
+    const effEnd = picking ? (hover || null) : selEnd
+    const rS = selStart && effEnd ? (selStart <= effEnd ? selStart : effEnd) : null
+    const rE = selStart && effEnd ? (selStart <= effEnd ? effEnd : selStart) : null
+    const single = selStart === rE
+
+    // Build rows of 7
+    const rows = []
+    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7))
+    while (rows.length > 0 && rows[rows.length - 1].every(c => !c)) rows.pop()
+
+    return (
+      <div style={{ minWidth: 224 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 32px)', gap: 0 }}>
+          {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => (
+            <div key={d} style={{ textAlign: 'center', fontSize: 10, color: '#9ca3af', padding: '0 0 8px', fontWeight: 600, letterSpacing: '0.04em' }}>{d}</div>
+          ))}
+          {rows.flat().map((dateStr, i) => {
+            if (!dateStr) return <div key={i} style={{ height: 34 }} />
+            const isS = dateStr === rS
+            const isE = dateStr === rE
+            const inR = rS && rE && dateStr > rS && dateStr < rE
+            const isToday = dateStr === todayStr
+            const dow = (firstDow + parseInt(dateStr.split('-')[2]) - 1) % 7
+            const isWeekStart = dow === 0
+            const isWeekEnd = dow === 6
+            const isRangeStart = isS && !single
+            const isRangeEnd = isE && !single
+
+            return (
+              <div key={i} onClick={() => handleDayClick(dateStr)} onMouseEnter={() => picking && setHover(dateStr)}
+                style={{ position: 'relative', height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', userSelect: 'none' }}
+              >
+                {/* Range background strip */}
+                {inR && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', borderRadius: isWeekStart ? '50% 0 0 50%' : isWeekEnd ? '0 50% 50% 0' : 0 }} />}
+                {isRangeStart && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', left: '50%', borderRadius: 0 }} />}
+                {isRangeEnd && <div style={{ position: 'absolute', inset: '3px 0', background: '#e0eaff', right: '50%', borderRadius: 0 }} />}
+                {/* Day circle */}
+                <div style={{
+                  position: 'relative', zIndex: 1,
+                  width: 30, height: 30, borderRadius: '50%',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: (isS || isE) ? BLUE : 'transparent',
+                  color: (isS || isE) ? '#fff' : inR ? BLUE : isToday ? BLUE : '#1f2937',
+                  fontWeight: (isS || isE) ? 700 : isToday ? 600 : 400,
+                  fontSize: 13,
+                  boxShadow: isToday && !(isS || isE) ? `inset 0 0 0 1.5px ${BLUE}` : 'none',
+                }}>
+                  {parseInt(dateStr.split('-')[2])}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  const canApply = (selStart && selEnd) || (!selStart && !selEnd)
+  const footerLabel = selStart && selEnd
+    ? <><strong style={{ color: '#111' }}>{fmtDateLabel(selStart)}</strong><span style={{ color: '#9ca3af', margin: '0 8px' }}>→</span><strong style={{ color: '#111' }}>{fmtDateLabel(selEnd)}</strong></>
+    : picking
+      ? <><strong style={{ color: '#111' }}>{fmtDateLabel(selStart)}</strong><span style={{ color: '#9ca3af', margin: '0 8px' }}>→</span><span style={{ color: ORANGE, fontStyle: 'italic' }}>pick end date</span></>
+      : <span style={{ color: '#9ca3af' }}>Select a start date</span>
+
+  const NavBtn = ({ onClick, children }) => (
+    <button onClick={onClick} style={{ width: 28, height: 28, borderRadius: 6, border: '1px solid #e5e7eb', background: '#f9fafb', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: '#6b7280', flexShrink: 0 }}>{children}</button>
+  )
+
+  return (
+    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 200, background: '#fff', borderRadius: 14, boxShadow: '0 12px 48px rgba(0,0,0,0.16), 0 2px 8px rgba(0,0,0,0.06)', border: '1px solid #e5e7eb', marginTop: 8, overflow: 'hidden', minWidth: 640 }}>
+      <div style={{ display: 'flex' }}>
+
+        {/* Preset sidebar */}
+        <div style={{ width: 160, background: '#fafafa', borderRight: '1px solid #f0f0f0', padding: '16px 0', flexShrink: 0 }}>
+          <p style={{ margin: '0 0 8px 16px', fontSize: 10, fontWeight: 700, color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Quick select</p>
+          {presets.map(({ label, fn }) => {
+            const active = isPresetActive(fn)
+            return (
+              <button key={label} onClick={() => applyPreset(fn)} style={{
+                display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+                padding: '7px 16px', border: 'none', cursor: 'pointer', fontSize: 13,
+                background: active ? '#eff6ff' : 'transparent',
+                color: active ? BLUE : '#374151',
+                fontWeight: active ? 600 : 400,
+              }}>
+                {active && <span style={{ width: 3, height: 14, background: BLUE, borderRadius: 2, marginRight: 8, flexShrink: 0 }} />}
+                {!active && <span style={{ width: 11, flexShrink: 0 }} />}
+                {label}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Dual calendar */}
+        <div style={{ flex: 1, padding: '20px 20px 16px' }}>
+          <div style={{ display: 'flex', gap: 28 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <NavBtn onClick={() => { if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) } else setViewMonth(m => m - 1) }}>‹</NavBtn>
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[viewMonth]} {viewYear}</span>
+                <div style={{ width: 28 }} />
+              </div>
+              {renderCal(viewYear, viewMonth)}
+            </div>
+            <div style={{ width: 1, background: '#f0f0f0', margin: '0 -4px' }} />
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ width: 28 }} />
+                <span style={{ fontWeight: 700, fontSize: 14, color: '#111' }}>{MONTHS_SHORT[rightMonth]} {rightYear}</span>
+                <NavBtn onClick={() => { if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) } else setViewMonth(m => m + 1) }}>›</NavBtn>
+              </div>
+              {renderCal(rightYear, rightMonth)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{ borderTop: '1px solid #f0f0f0', padding: '12px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#fafafa' }}>
+        <div style={{ fontSize: 13 }}>{footerLabel}</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onClose} style={{ padding: '7px 18px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#fff', cursor: 'pointer', fontSize: 13, color: '#374151', fontWeight: 500 }}>Cancel</button>
+          <button
+            onClick={() => { onChange(selStart && selEnd ? { start: selStart, end: selEnd } : null); onClose() }}
+            disabled={!canApply}
+            style={{ padding: '7px 22px', borderRadius: 8, border: 'none', background: canApply ? BLUE : '#bfdbfe', color: '#fff', cursor: canApply ? 'pointer' : 'default', fontSize: 13, fontWeight: 700, letterSpacing: '0.01em' }}
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SectionLabel({ children }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '2rem 0 1rem' }}>
@@ -359,13 +896,20 @@ function SectionLabel({ children }) {
   )
 }
 
-function HeatmapCell({ value, max }) {
+function HeatmapCell({ value, max, isTotal }) {
   const t = max > 0 ? value / max : 0
   return (
     <div title={`${Math.round(value)} orders`} style={{
-      flex: 1, height: 22, borderRadius: 2,
-      background: t === 0 ? '#f1f5f9' : `rgba(37,99,235,${0.08 + t * 0.82})`,
-    }} />
+      flex: 1, height: 26, borderRadius: 2, minWidth: 0,
+      background: isTotal ? 'transparent' : t === 0 ? '#f1f5f9' : `rgba(37,99,235,${0.08 + t * 0.82})`,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>
+      {value > 0 && (
+        <span style={{ fontSize: 8, fontWeight: 600, lineHeight: 1, color: isTotal ? T.MUTED : t > 0.55 ? '#fff' : '#475569', pointerEvents: 'none' }}>
+          {Math.round(value)}
+        </span>
+      )}
+    </div>
   )
 }
 
@@ -402,13 +946,13 @@ function parseFile(file, onSuccess, onError) {
     complete: ({ data: raw }) => {
       const parsed = parsePOSFile(raw)
       if (parsed) {
-        onSuccess(processData(parsed.dataRows, parsed.meta))
+        onSuccess({ rows: parsed.dataRows, meta: parsed.meta })
       } else {
         Papa.parse(file, {
           header: true, skipEmptyLines: true,
           complete: ({ data: rows }) => {
             if (!rows.length) { onError('No data found.'); return }
-            onSuccess(processData(rows, {}))
+            onSuccess({ rows, meta: {} })
           },
           error: () => onError('Failed to read file.'),
         })
@@ -419,30 +963,44 @@ function parseFile(file, onSuccess, onError) {
 }
 
 export default function Dashboard() {
-  const [data, setData] = useState(null)
+  const [rawData, setRawData] = useState(null)
   const [fileName, setFileName] = useState(null)
-  const [compareData, setCompareData] = useState(null)
+  const [rawCompareData, setRawCompareData] = useState(null)
   const [compareFileName, setCompareFileName] = useState(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState(null)
-  const [period, setPeriod] = useState('all')
+  const [dateRange, setDateRange] = useState(null)  // null = all time; { start, end } = filtered
+  const [showDatePicker, setShowDatePicker] = useState(false)
   const [search, setSearch] = useState('')
   const [productSearch, setProductSearch] = useState('')
-  const [targets, setTargets] = useState({})
+  const [targets, setTargets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('storedash-targets') || '{}') } catch { return {} }
+  })
   const [editingTargets, setEditingTargets] = useState(false)
+  const [allProductSearch, setAllProductSearch] = useState('')
+  const [selectedSalesman, setSelectedSalesman] = useState(null)
+  const [salesmanSearch, setSalesmanSearch] = useState('')
+  const [salesmanProductSearch, setSalesmanProductSearch] = useState('')
+  const [heatView, setHeatView] = useState('a')
+  const [staffView, setStaffView] = useState('a')
+  const [prodCountView, setProdCountView] = useState('a')
+  const [draggingB, setDraggingB] = useState(false)
   const fileRef = useRef()
   const compareFileRef = useRef()
+
+  const data = useMemo(() => rawData ? processData(rawData.rows, rawData.meta, dateRange) : null, [rawData, dateRange])
+  const compareData = useMemo(() => rawCompareData ? processData(rawCompareData.rows, rawCompareData.meta, dateRange) : null, [rawCompareData, dateRange])
 
   const handleFile = useCallback(file => {
     if (!file) return
     setError(null); setFileName(file.name)
-    parseFile(file, setData, setError)
+    parseFile(file, setRawData, setError)
   }, [])
 
   const handleCompareFile = useCallback(file => {
     if (!file) return
     setCompareFileName(file.name)
-    parseFile(file, setCompareData, () => {})
+    parseFile(file, setRawCompareData, () => {})
   }, [])
 
   const onDrop = useCallback(e => {
@@ -452,30 +1010,53 @@ export default function Dashboard() {
   const loadDemo = () => {
     setFileName('demo_store_a.csv'); setError(null)
     const { rows, meta } = generateDemoData(0)
-    setData(processData(rows, meta))
+    setRawData({ rows, meta })
   }
 
   const loadDemoCompare = () => {
     setCompareFileName('demo_store_b.csv')
     const { rows, meta } = generateDemoData(99)
-    setCompareData(processData(rows, meta))
+    setRawCompareData({ rows, meta })
   }
 
   const resetAll = () => {
-    setData(null); setFileName(null); setCompareData(null); setCompareFileName(null)
-    setError(null); setSearch(''); setProductSearch(''); setTargets({})
+    setRawData(null); setFileName(null); setRawCompareData(null); setCompareFileName(null)
+    setError(null); setSearch(''); setProductSearch(''); setAllProductSearch(''); setSelectedSalesman(null); setSalesmanSearch(''); setSalesmanProductSearch(''); setTargets({}); setDateRange(null); setShowDatePicker(false)
   }
 
-  const trend = data ? (() => {
-    const t = data.trend
-    if (period === '7d') return t.slice(-7)
-    if (period === '30d') return t.slice(-30)
-    return t
-  })() : []
+  useEffect(() => {
+    localStorage.setItem('storedash-targets', JSON.stringify(targets))
+  }, [targets])
 
-  const heatmapMax = data ? Math.max(...data.heatmap.flat()) : 1
-  const dowMax = data ? Math.max(...data.dowTotals.map(d => d.value)) : 1
-  const filteredSalesmen = data ? (search ? data.salesmen.filter(s => s.name.toLowerCase().includes(search.toLowerCase())) : data.salesmen) : []
+  const trend = data?.trend ?? []
+
+  // Auto-insights: surface key signals from data
+  const insights = useMemo(() => {
+    if (!data) return []
+    const items = []
+    if (data.momChange !== null && data.momChange !== undefined) {
+      if (data.momChange >= 10) items.push({ type: 'positive', icon: '📈', text: `Revenue up ${data.momChange.toFixed(1)}% vs last month (${data.momPrevLabel} → ${data.momCurrentLabel})` })
+      else if (data.momChange <= -10) items.push({ type: 'warning', icon: '📉', text: `Revenue down ${Math.abs(data.momChange).toFixed(1)}% vs last month — may need attention` })
+    }
+    if (data.returnRate > 0.08) items.push({ type: 'warning', icon: '↩️', text: `Return rate is ${(data.returnRate * 100).toFixed(1)}% — above 8% threshold` })
+    else if (data.returnRate > 0) items.push({ type: 'neutral', icon: '↩️', text: `Return rate is ${(data.returnRate * 100).toFixed(1)}% — within normal range` })
+    const topSalesman = data.salesmen[0]
+    const secondSalesman = data.salesmen[1]
+    if (topSalesman && secondSalesman && topSalesman.revenue > secondSalesman.revenue * 1.5) {
+      items.push({ type: 'neutral', icon: '🏆', text: `${topSalesman.name} leads by ${((topSalesman.revenue / secondSalesman.revenue - 1) * 100).toFixed(0)}% over #2 — consider sharing their approach` })
+    }
+    const highReturnStaff = data.salesmen.filter(s => s.returnRate > 15 && s.returnCount >= 2)
+    highReturnStaff.forEach(s => items.push({ type: 'warning', icon: '⚠️', text: `${s.name} has a ${s.returnRate}% return rate (${s.returnCount} returns) — may need coaching` }))
+    const wrNum = parseFloat(data.weekendRatio)
+    if (!isNaN(wrNum) && wrNum > 1.3) items.push({ type: 'positive', icon: '📅', text: `Weekend traffic is ${wrNum}× weekday average — good for promotions` })
+    else if (!isNaN(wrNum) && wrNum < 0.7) items.push({ type: 'neutral', icon: '📅', text: `Weekdays outperform weekends (${wrNum}× ratio) — consider weekday-focused offers` })
+    if (data.peakHour !== undefined) items.push({ type: 'neutral', icon: '🕐', text: `Peak traffic: ${DAYS[data.peakDay]} ${data.peakHour}:00–${data.peakHour + 1}:00 — best time for demos or promos` })
+    const rspGapPct = data.totalRSP > 0 ? (data.rspGap / data.totalRSP) * 100 : 0
+    if (rspGapPct > 5) items.push({ type: 'warning', icon: '💸', text: `Discount gap is ${rspGapPct.toFixed(1)}% below RSP (${fmtMYR(data.rspGap)}) — review pricing strategy` })
+    else if (rspGapPct > 0) items.push({ type: 'neutral', icon: '💸', text: `Discount gap is ${rspGapPct.toFixed(1)}% below RSP — within acceptable range` })
+    return items.slice(0, 6)
+  }, [data])
+
   const activeProducts = data ? (productSearch ? data.topProducts.filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase())) : data.topProducts) : []
 
   // Merge trend for comparison overlay
@@ -521,6 +1102,23 @@ export default function Dashboard() {
   const nameA = data?.meta?.outlet || 'Store A'
   const nameB = compareData?.meta?.outlet || 'Store B'
 
+  const allProductsComparison = (() => {
+    if (!data || !compareData) return null
+    const aMap = {}, bMap = {}
+    data.allProducts.forEach(p => { aMap[p.name] = p.units })
+    compareData.allProducts.forEach(p => { bMap[p.name] = p.units })
+    const names = [...new Set([...Object.keys(aMap), ...Object.keys(bMap)])]
+    return names
+      .map(name => ({ name, unitsA: aMap[name] || 0, unitsB: bMap[name] || 0 }))
+      .sort((a, b) => (b.unitsA + b.unitsB) - (a.unitsA + a.unitsB))
+  })()
+
+  const productTypeComparison = compareData ? ['Drone', 'Handheld', 'Other'].map(name => {
+    const a = data?.productTypes.find(p => p.name === name)
+    const b = compareData.productTypes.find(p => p.name === name)
+    return { name, storeA: a?.revenue || 0, storeB: b?.revenue || 0, ordersA: a?.orders || 0, ordersB: b?.orders || 0 }
+  }).filter(p => p.storeA > 0 || p.storeB > 0) : null
+
   return (
     <div style={{ minHeight: '100vh', background: T.BG, color: T.TEXT, fontFamily: "'Inter', system-ui, sans-serif" }}>
 
@@ -529,52 +1127,101 @@ export default function Dashboard() {
         position: 'sticky', top: 0, zIndex: 10,
         borderBottom: `1px solid ${T.BORDER}`,
         background: T.NAV, backdropFilter: 'blur(12px)',
-        padding: '0 2rem', height: 54,
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+        padding: '0 1.5rem', height: 56,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 18 }}>📊</span>
-          <span style={{ fontWeight: 700, fontSize: 15, color: BLUE }}>StoreDash</span>
-          {data?.meta?.outlet && (
-            <span style={{ fontSize: 12, color: T.MUTED, borderLeft: `1px solid ${T.BORDER_STRONG}`, paddingLeft: 10, marginLeft: 4 }}>
-              {data.meta.outlet}
-            </span>
-          )}
-          {compareData?.meta?.outlet && (
-            <span style={{ fontSize: 12, color: STORE_B_COLOR, borderLeft: `1px solid ${T.BORDER_STRONG}`, paddingLeft: 10, marginLeft: 4 }}>
-              vs {compareData.meta.outlet}
-            </span>
-          )}
+        {/* Left: brand */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <div style={{ width: 30, height: 30, borderRadius: 8, background: BLUE, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📊</div>
+          <span style={{ fontWeight: 800, fontSize: 15, color: BLUE, letterSpacing: '-0.01em' }}>StoreDash</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+
+        {/* Center: store context */}
+        {data && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, justifyContent: 'center', minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: 20, padding: '4px 12px' }}>
+              <div style={{ width: 7, height: 7, borderRadius: '50%', background: BLUE, flexShrink: 0 }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: BLUE, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{data.meta?.outlet || fileName}</span>
+            </div>
+            {compareData && (
+              <>
+                <span style={{ fontSize: 11, color: T.MUTED }}>vs</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#f5f3ff', border: `1px solid #ddd6fe`, borderRadius: 20, padding: '4px 12px' }}>
+                  <div style={{ width: 7, height: 7, borderRadius: '50%', background: STORE_B_COLOR, flexShrink: 0 }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: STORE_B_COLOR, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}>{compareData.meta?.outlet || compareFileName}</span>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Right: date picker + actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0, position: 'relative' }}>
           {data && (
             <>
-              <span style={{ fontSize: 12, color: T.MUTED }}>📄 {fileName}</span>
+              {/* Date range picker button */}
+              <button
+                onClick={() => setShowDatePicker(p => !p)}
+                style={{
+                  fontSize: 12, padding: '5px 12px', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+                  border: `1px solid ${dateRange ? BLUE : T.BORDER_STRONG}`,
+                  background: dateRange ? '#eff6ff' : T.CARD,
+                  color: dateRange ? BLUE : T.TEXT,
+                  fontWeight: dateRange ? 600 : 400,
+                  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <span>📅</span>
+                <span>{formatRangeLabel(dateRange)}</span>
+                <span style={{ color: T.MUTED, fontSize: 10 }}>▾</span>
+              </button>
+              {dateRange && (
+                <button onClick={() => setDateRange(null)} title="Clear date filter" style={{ fontSize: 11, padding: '4px 7px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>✕</button>
+              )}
+
+              {showDatePicker && (
+                <DateRangePicker
+                  value={dateRange}
+                  onChange={r => { setDateRange(r); setShowDatePicker(false) }}
+                  onClose={() => setShowDatePicker(false)}
+                />
+              )}
+
+              <div style={{ width: 1, height: 20, background: T.BORDER_STRONG, margin: '0 2px' }} />
+
               {!compareData && (
                 <>
                   <input ref={compareFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleCompareFile(e.target.files[0])} />
                   <button onClick={() => compareFileRef.current.click()}
-                    style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: '#f5f3ff', color: STORE_B_COLOR, cursor: 'pointer', fontWeight: 500 }}>
-                    + Compare store
+                    style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: '#f5f3ff', color: STORE_B_COLOR, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    + Compare
                   </button>
                 </>
               )}
               {compareData && (
-                <button onClick={() => { setCompareData(null); setCompareFileName(null) }}
-                  style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>
-                  Remove comparison
+                <button onClick={() => { setRawCompareData(null); setCompareFileName(null) }}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer' }}>
+                  ✕ Remove B
                 </button>
               )}
-              <button onClick={() => exportCSV(data, fileName)}
-                style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
-                ⬇ Export CSV
-              </button>
+
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button onClick={() => exportCSV(data, fileName)}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+                  ⬇ CSV
+                </button>
+                <button onClick={() => exportPDF(data, compareData, nameA, nameB, formatRangeLabel(dateRange))}
+                  style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+                  📄 PDF
+                </button>
+              </div>
             </>
           )}
           <button onClick={resetAll}
-            style={{ fontSize: 12, padding: '5px 14px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.CARD, color: T.MUTED, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
-            {data ? 'Upload new' : 'Upload CSV'}
+            style={{ fontSize: 12, padding: '5px 12px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: data ? BLUE : T.CARD, color: data ? '#fff' : T.MUTED, cursor: 'pointer', fontWeight: data ? 600 : 400, boxShadow: '0 1px 2px rgba(0,0,0,0.05)', whiteSpace: 'nowrap' }}>
+            {data ? '↑ Upload' : 'Upload CSV'}
           </button>
         </div>
       </nav>
@@ -645,13 +1292,6 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* Filters */}
-            <div style={{ display: 'flex', gap: 6, marginBottom: '1.25rem' }}>
-              {[['7d','7 days'],['30d','30 days'],['all','All time']].map(([k, l]) => (
-                <TabBtn key={k} active={period === k} onClick={() => setPeriod(k)}>{l}</TabBtn>
-              ))}
-            </div>
-
             {/* ── STORE COMPARISON ── */}
             {compareData && (
               <>
@@ -712,8 +1352,8 @@ export default function Dashboard() {
                     <LineChart data={comparisonTrend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.MUTED }} interval={Math.max(0, Math.floor(comparisonTrend.length / 7))} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Line type="monotone" dataKey="storeA" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                       <Line type="monotone" dataKey="storeB" stroke={STORE_B_COLOR} strokeWidth={2} dot={false} activeDot={{ r: 4 }} strokeDasharray="5 3" />
                     </LineChart>
@@ -726,8 +1366,8 @@ export default function Dashboard() {
                     <BarChart data={categoryComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -758,8 +1398,8 @@ export default function Dashboard() {
                     <BarChart data={monthlyComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -806,12 +1446,28 @@ export default function Dashboard() {
 
             {/* If no comparison yet, show a prompt */}
             {!compareData && (
-              <div style={{ background: '#f5f3ff', border: `1px dashed ${STORE_B_COLOR}`, borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div
+                onDragOver={e => { e.preventDefault(); setDraggingB(true) }}
+                onDragLeave={() => setDraggingB(false)}
+                onDrop={e => { e.preventDefault(); setDraggingB(false); handleCompareFile(e.dataTransfer.files[0]) }}
+                onClick={() => compareFileRef.current.click()}
+                style={{
+                  background: draggingB ? '#ede9fe' : '#f5f3ff',
+                  border: `2px dashed ${draggingB ? STORE_B_COLOR : 'rgba(124,58,237,0.4)'}`,
+                  borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '0.5rem',
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  cursor: 'pointer', transition: 'all 0.15s',
+                }}
+              >
                 <div>
-                  <p style={{ fontSize: 13, fontWeight: 600, color: STORE_B_COLOR, margin: '0 0 2px' }}>Compare with another store</p>
-                  <p style={{ fontSize: 12, color: T.MUTED, margin: 0 }}>Upload a second store's CSV to see side-by-side revenue, category, and trend comparisons</p>
+                  <p style={{ fontSize: 13, fontWeight: 600, color: STORE_B_COLOR, margin: '0 0 2px' }}>
+                    {draggingB ? '📂 Drop Store B CSV here' : 'Compare with another store'}
+                  </p>
+                  <p style={{ fontSize: 12, color: T.MUTED, margin: 0 }}>
+                    {draggingB ? 'Release to load Store B' : 'Drag & drop a CSV here, or click to browse'}
+                  </p>
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8 }} onClick={e => e.stopPropagation()}>
                   <input ref={compareFileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleCompareFile(e.target.files[0])} />
                   <button onClick={loadDemoCompare}
                     style={{ fontSize: 12, padding: '7px 14px', borderRadius: 8, border: `1px solid ${STORE_B_COLOR}`, background: 'transparent', color: STORE_B_COLOR, cursor: 'pointer', whiteSpace: 'nowrap' }}>
@@ -826,6 +1482,26 @@ export default function Dashboard() {
             )}
 
             {/* ── SALES OVERVIEW ── */}
+            {/* ── AUTO INSIGHTS ── */}
+            {insights.length > 0 && (
+              <div style={{ marginBottom: '1.25rem' }}>
+                <SectionLabel>Auto insights</SectionLabel>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 8 }}>
+                  {insights.map((ins, i) => (
+                    <div key={i} style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 14px',
+                      background: ins.type === 'positive' ? '#f0fdf4' : ins.type === 'warning' ? '#fff7ed' : T.CARD,
+                      border: `1px solid ${ins.type === 'positive' ? '#bbf7d0' : ins.type === 'warning' ? '#fed7aa' : T.BORDER}`,
+                      borderRadius: 10
+                    }}>
+                      <span style={{ fontSize: 16, lineHeight: 1.4 }}>{ins.icon}</span>
+                      <span style={{ fontSize: 12.5, color: T.TEXT, lineHeight: 1.5 }}>{ins.text}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <SectionLabel>Sales overview</SectionLabel>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: '1.25rem' }}>
               <KPI icon="💰" label="Net revenue" value={fmtMYR(data.totalRevenue)}
@@ -840,15 +1516,36 @@ export default function Dashboard() {
             </div>
 
             {/* Revenue trend */}
-            <Card title="Revenue trend">
+            <Card title={compareData ? `Revenue trend — ${nameA} vs ${nameB}` : 'Revenue trend'}>
+              {compareData && (
+                <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
+                  {[{ color: BLUE, name: nameA }, { color: STORE_B_COLOR, name: nameB }].map(s => (
+                    <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: T.MUTED }}>
+                      <div style={{ width: 20, height: 3, borderRadius: 2, background: s.color }} />
+                      {s.name}
+                    </div>
+                  ))}
+                </div>
+              )}
               <ResponsiveContainer width="100%" height={220}>
-                <LineChart data={trend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: T.MUTED }} interval={Math.max(0, Math.floor(trend.length / 7))} />
-                  <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                  <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
-                  <Line type="monotone" dataKey="revenue" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
-                </LineChart>
+                {compareData ? (
+                  <LineChart data={comparisonTrend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: T.MUTED }} interval={Math.max(0, Math.floor(comparisonTrend.length / 7))} />
+                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                    <Line type="monotone" dataKey="storeA" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                    <Line type="monotone" dataKey="storeB" stroke={STORE_B_COLOR} strokeWidth={2} dot={false} activeDot={{ r: 4 }} strokeDasharray="5 3" />
+                  </LineChart>
+                ) : (
+                  <LineChart data={trend} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                    <XAxis dataKey="date" tick={{ fontSize: 11, fill: T.MUTED }} interval={Math.max(0, Math.floor(trend.length / 7))} />
+                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                    <Line type="monotone" dataKey="revenue" stroke={BLUE} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                  </LineChart>
+                )}
               </ResponsiveContainer>
             </Card>
 
@@ -862,6 +1559,52 @@ export default function Dashboard() {
                 delta={data.returnRate < 5 ? 'Healthy' : data.returnRate < 10 ? 'Monitor closely' : 'High — investigate'}
                 color={data.returnRate < 5 ? GREEN : data.returnRate < 10 ? ORANGE : RED} />
             </div>
+
+            {/* ── RETURN BREAKDOWN ── */}
+            {(data.topReturnedProducts?.length > 0 || data.salesmen.some(s => s.returnCount > 0)) && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: '1.25rem' }}>
+                {data.topReturnedProducts?.length > 0 && (
+                  <Card title="Returns by product">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {data.topReturnedProducts.map((p, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 11, color: T.MUTED, minWidth: 16, textAlign: 'right' }}>{i + 1}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>{p.name}</span>
+                              <span style={{ fontSize: 11, color: p.returnRate >= 15 ? RED : T.MUTED }}>{p.returnRate}% · {p.returnCount} returns</span>
+                            </div>
+                            <div style={{ height: 4, background: T.BORDER, borderRadius: 2 }}>
+                              <div style={{ height: '100%', width: `${Math.min(p.returnRate, 100)}%`, background: p.returnRate >= 15 ? RED : ORANGE, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+                {data.salesmen.some(s => s.returnCount > 0) && (
+                  <Card title="Returns by salesman">
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {data.salesmen.filter(s => s.returnCount > 0).sort((a, b) => b.returnCount - a.returnCount).map((s, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ fontSize: 11, color: T.MUTED, minWidth: 16, textAlign: 'right' }}>{i + 1}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 500, color: T.TEXT }}>{s.name}</span>
+                              <span style={{ fontSize: 11, color: s.returnRate >= 15 ? RED : T.MUTED }}>{s.returnRate}% · {s.returnCount} returns · {fmtMYR(s.returnRevenue)}</span>
+                            </div>
+                            <div style={{ height: 4, background: T.BORDER, borderRadius: 2 }}>
+                              <div style={{ height: '100%', width: `${Math.min(s.returnRate, 100)}%`, background: s.returnRate >= 15 ? RED : ORANGE, borderRadius: 2 }} />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+              </div>
+            )}
 
             {/* ── MONTH-OVER-MONTH ── */}
             <SectionLabel>Month-over-month</SectionLabel>
@@ -923,8 +1666,8 @@ export default function Dashboard() {
                     <BarChart data={monthlyComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={(v, name) => [fmtMYR(v), name === 'storeA' ? nameA : nameB]} />
                       <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name="storeA" />
                       <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name="storeB" />
                     </BarChart>
@@ -932,8 +1675,8 @@ export default function Dashboard() {
                     <BarChart data={data.monthlyBreakdown} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                       <XAxis dataKey="label" tick={{ fontSize: 11, fill: T.MUTED }} />
-                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                      <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                       <Bar dataKey="revenue" radius={[4,4,0,0]}>
                         {data.monthlyBreakdown.map((m, i) => (
                           <Cell key={i} fill={m.key === data.momCurrentLabel ? BLUE : '#bfdbfe'} />
@@ -957,18 +1700,49 @@ export default function Dashboard() {
 
             {/* Category + Products */}
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12, marginTop: 12 }}>
-              <Card title="Sales by category">
+              <Card title="Sales by product type">
                 <ResponsiveContainer width="100%" height={190}>
-                  <BarChart data={data.categories} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} />
-                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
-                    <Bar dataKey="revenue" radius={[4,4,0,0]}>
-                      {data.categories.map((_, i) => <Cell key={i} fill={i === 0 ? BLUE : '#bfdbfe'} />)}
-                    </Bar>
-                  </BarChart>
+                  {productTypeComparison ? (
+                    <BarChart data={productTypeComparison} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
+                        formatter={(v, key) => [fmtMYR(v), key === 'storeA' ? nameA : nameB]} />
+                      <Bar dataKey="storeA" fill={BLUE} radius={[4,4,0,0]} name={nameA} />
+                      <Bar dataKey="storeB" fill={STORE_B_COLOR} radius={[4,4,0,0]} name={nameB} />
+                    </BarChart>
+                  ) : (
+                    <BarChart data={data.productTypes} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                      <XAxis dataKey="name" tick={{ fontSize: 12, fill: T.MUTED }} />
+                      <YAxis tick={{ fontSize: 11, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
+                      <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": "
+                        formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
+                      <Bar dataKey="revenue" radius={[4,4,0,0]}>
+                        {data.productTypes.map((pt, i) => (
+                          <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  )}
                 </ResponsiveContainer>
+                <div style={{ display: 'flex', gap: 16, marginTop: 8 }}>
+                  {productTypeComparison ? (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: BLUE }} />{nameA}</div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: STORE_B_COLOR }} />{nameB}</div>
+                    </>
+                  ) : [{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
+                    const pt = data.productTypes.find(p => p.name === t.name)
+                    return pt ? (
+                      <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                        <div style={{ width: 8, height: 8, borderRadius: 2, background: t.color }} />
+                        {t.name} · {fmtNum(pt.orders)} units
+                      </div>
+                    ) : null
+                  })}
+                </div>
               </Card>
 
               <Card
@@ -1006,77 +1780,97 @@ export default function Dashboard() {
               <Card
                 title="Salesman leaderboard"
                 action={
-                  <button onClick={() => setEditingTargets(v => !v)}
-                    style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: editingTargets ? BLUE : T.BG, color: editingTargets ? '#fff' : T.MUTED, cursor: 'pointer' }}>
-                    {editingTargets ? 'Done' : 'Set targets'}
-                  </button>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    {compareData && (
+                      <div style={{ display: 'flex', gap: 2, background: '#e5e7eb', borderRadius: 8, padding: 2 }}>
+                        <button onClick={() => setStaffView('a')} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, border: 'none', background: staffView === 'a' ? '#fff' : 'transparent', color: staffView === 'a' ? BLUE : T.MUTED, fontWeight: staffView === 'a' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameA}</button>
+                        <button onClick={() => setStaffView('b')} style={{ fontSize: 11, padding: '3px 9px', borderRadius: 6, border: 'none', background: staffView === 'b' ? '#fff' : 'transparent', color: staffView === 'b' ? STORE_B_COLOR : T.MUTED, fontWeight: staffView === 'b' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameB}</button>
+                      </div>
+                    )}
+                    {staffView === 'a' && (
+                      <button onClick={() => setEditingTargets(v => !v)}
+                        style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: editingTargets ? BLUE : T.BG, color: editingTargets ? '#fff' : T.MUTED, cursor: 'pointer' }}>
+                        {editingTargets ? 'Done' : 'Set targets'}
+                      </button>
+                    )}
+                  </div>
                 }
               >
-                <div style={{ marginBottom: 12 }}>
-                  <input
-                    placeholder="Search salesman..."
-                    value={search}
-                    onChange={e => setSearch(e.target.value)}
-                    style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none' }}
-                  />
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {filteredSalesmen.map((s, i) => {
-                    const target = targets[s.name] || 0
-                    const pct = target > 0 ? Math.min(100, s.revenue / target * 100) : 0
-                    return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-                        <span style={{ width: 20, fontSize: 11, color: T.MUTED, textAlign: 'right', paddingTop: 2 }}>#{i + 1}</span>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                            <span style={{ fontSize: 12, color: T.TEXT }}>{s.name}</span>
-                            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                              <span style={{ fontSize: 11, color: T.MUTED }}>{fmtNum(s.orders)} orders</span>
-                              <span style={{ fontSize: 11, color: i === 0 ? BLUE : T.MUTED, fontWeight: i === 0 ? 700 : 400 }}>{fmtMYR(s.revenue)}</span>
-                            </div>
-                          </div>
-                          {editingTargets ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <span style={{ fontSize: 10, color: T.MUTED }}>Target RM</span>
-                              <input
-                                type="number"
-                                placeholder="0"
-                                value={targets[s.name] || ''}
-                                onChange={e => setTargets(t => ({ ...t, [s.name]: parseFloat(e.target.value) || 0 }))}
-                                style={{ width: 90, fontSize: 11, padding: '3px 6px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none' }}
-                              />
-                              {target > 0 && <span style={{ fontSize: 10, color: pct >= 100 ? GREEN : T.MUTED }}>{pct.toFixed(0)}%</span>}
-                            </div>
-                          ) : target > 0 ? (
-                            <div>
-                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                                <span style={{ fontSize: 10, color: T.MUTED }}>Target: {fmtMYR(target)}</span>
-                                <span style={{ fontSize: 10, color: pct >= 100 ? GREEN : ORANGE, fontWeight: 600 }}>{pct.toFixed(0)}%</span>
-                              </div>
-                              <div style={{ background: '#e5e7eb', borderRadius: 4, height: 5 }}>
-                                <div style={{ background: pct >= 100 ? GREEN : pct >= 70 ? BLUE : ORANGE, height: '100%', borderRadius: 4, width: `${pct}%`, transition: 'width 0.4s' }} />
-                              </div>
-                            </div>
-                          ) : (
-                            <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
-                              <div style={{ background: i === 0 ? BLUE : '#bfdbfe', height: '100%', borderRadius: 4, width: `${filteredSalesmen[0] ? Math.round(s.revenue / filteredSalesmen[0].revenue * 100) : 0}%` }} />
-                            </div>
-                          )}
-                        </div>
+                {(() => {
+                  const staffData = (compareData && staffView === 'b') ? compareData : data
+                  const staffColor = (compareData && staffView === 'b') ? STORE_B_COLOR : BLUE
+                  const staffBarBg = staffColor === STORE_B_COLOR ? '#ddd6fe' : '#bfdbfe'
+                  const filtered = search ? staffData.salesmen.filter(s => s.name.toLowerCase().includes(search.toLowerCase())) : staffData.salesmen
+                  return (
+                    <>
+                      <div style={{ marginBottom: 12 }}>
+                        <input
+                          placeholder="Search salesman..."
+                          value={search}
+                          onChange={e => setSearch(e.target.value)}
+                          style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none' }}
+                        />
                       </div>
-                    )
-                  })}
-                  {filteredSalesmen.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center' }}>No results</p>}
-                </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        {filtered.map((s, i) => {
+                          const target = staffView === 'a' ? (targets[s.name] || 0) : 0
+                          const pct = target > 0 ? Math.min(100, s.revenue / target * 100) : 0
+                          return (
+                            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                              <span style={{ width: 20, fontSize: 11, color: T.MUTED, textAlign: 'right', paddingTop: 2 }}>#{i + 1}</span>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                  <span style={{ fontSize: 12, color: T.TEXT }}>{s.name}</span>
+                                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <span style={{ fontSize: 11, color: T.MUTED }}>{fmtNum(s.orders)} orders</span>
+                                    <span style={{ fontSize: 11, color: i === 0 ? staffColor : T.MUTED, fontWeight: i === 0 ? 700 : 400 }}>{fmtMYR(s.revenue)}</span>
+                                  </div>
+                                </div>
+                                {staffView === 'a' && editingTargets ? (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                    <span style={{ fontSize: 10, color: T.MUTED }}>Target RM</span>
+                                    <input
+                                      type="number"
+                                      placeholder="0"
+                                      value={targets[s.name] || ''}
+                                      onChange={e => setTargets(t => ({ ...t, [s.name]: parseFloat(e.target.value) || 0 }))}
+                                      style={{ width: 90, fontSize: 11, padding: '3px 6px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none' }}
+                                    />
+                                    {target > 0 && <span style={{ fontSize: 10, color: pct >= 100 ? GREEN : T.MUTED }}>{pct.toFixed(0)}%</span>}
+                                  </div>
+                                ) : staffView === 'a' && target > 0 ? (
+                                  <div>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                                      <span style={{ fontSize: 10, color: T.MUTED }}>Target: {fmtMYR(target)}</span>
+                                      <span style={{ fontSize: 10, color: pct >= 100 ? GREEN : ORANGE, fontWeight: 600 }}>{pct.toFixed(0)}%</span>
+                                    </div>
+                                    <div style={{ background: '#e5e7eb', borderRadius: 4, height: 5 }}>
+                                      <div style={{ background: pct >= 100 ? GREEN : pct >= 70 ? BLUE : ORANGE, height: '100%', borderRadius: 4, width: `${pct}%`, transition: 'width 0.4s' }} />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                                    <div style={{ background: i === 0 ? staffColor : staffBarBg, height: '100%', borderRadius: 4, width: `${filtered[0] ? Math.round(s.revenue / filtered[0].revenue * 100) : 0}%` }} />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })}
+                        {filtered.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center' }}>No results</p>}
+                      </div>
+                    </>
+                  )
+                })()}
               </Card>
 
               <Card title="Payment methods">
                 <ResponsiveContainer width="100%" height={180}>
                   <BarChart data={data.payments} layout="vertical" margin={{ top: 0, right: 8, bottom: 0, left: 60 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 10, fill: T.MUTED }} tickFormatter={v => fmtMYR(v)} />
+                    <XAxis type="number" tick={{ fontSize: 10, fill: T.MUTED }} tickFormatter={v => fmtMYRAbbr(v)} />
                     <YAxis type="category" dataKey="name" tick={{ fontSize: 10, fill: T.MUTED }} width={80} tickFormatter={v => v.length > 16 ? v.slice(0, 14) + '…' : v} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
+                    <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtMYR(v), 'Revenue']} />
                     <Bar dataKey="revenue" radius={[0,4,4,0]}>
                       {data.payments.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
                     </Bar>
@@ -1093,49 +1887,178 @@ export default function Dashboard() {
               </Card>
             </div>
 
-            {/* Brand + Customer */}
-            <SectionLabel>Brand & customer insights</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-              <Card title="Brand performance">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {data.brands.map((b, i) => (
-                    <div key={i}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                        <span style={{ fontSize: 12, color: T.TEXT }}>{b.name || 'Unbranded'}</span>
-                        <span style={{ fontSize: 11, color: T.MUTED }}>{fmtMYR(b.revenue)}</span>
+            {/* Product Count */}
+            <SectionLabel>Product count</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+
+              {/* Left: all products — comparison-aware */}
+              <Card
+                title={allProductsComparison
+                  ? `All products · ${nameA} vs ${nameB}`
+                  : `All products · ${data.allProducts.length} items`}
+                action={
+                  <input
+                    placeholder="Search product..."
+                    value={allProductSearch}
+                    onChange={e => setAllProductSearch(e.target.value)}
+                    style={{ fontSize: 11, padding: '4px 8px', borderRadius: 6, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', width: 130 }}
+                  />
+                }
+              >
+                {(() => {
+                  if (allProductsComparison) {
+                    // Comparison view: side-by-side bars per product
+                    const filtered = allProductSearch
+                      ? allProductsComparison.filter(p => p.name.toLowerCase().includes(allProductSearch.toLowerCase()))
+                      : allProductsComparison
+                    const maxUnits = Math.max(...allProductsComparison.map(p => Math.max(p.unitsA, p.unitsB)), 1)
+                    return (
+                      <>
+                        <div style={{ display: 'flex', gap: 14, marginBottom: 10 }}>
+                          {[{ color: BLUE, name: nameA }, { color: STORE_B_COLOR, name: nameB }].map(s => (
+                            <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                              <div style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />{s.name}
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
+                          {filtered.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '1rem 0' }}>No products found</p>}
+                          {filtered.map((p, i) => (
+                            <div key={i}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '55%' }}>{p.name}</span>
+                                <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: BLUE }}>{fmtNum(p.unitsA)}</span>
+                                  <span style={{ fontSize: 11, fontWeight: 600, color: STORE_B_COLOR }}>{fmtNum(p.unitsB)}</span>
+                                </div>
+                              </div>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                <div style={{ background: '#e5e7eb', borderRadius: 3, height: 4 }}>
+                                  <div style={{ background: BLUE, height: '100%', borderRadius: 3, width: `${Math.round(p.unitsA / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                </div>
+                                <div style={{ background: '#e5e7eb', borderRadius: 3, height: 4 }}>
+                                  <div style={{ background: STORE_B_COLOR, height: '100%', borderRadius: 3, width: `${Math.round(p.unitsB / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.BORDER}`, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 11, color: T.MUTED }}>Showing <strong style={{ color: T.TEXT }}>{filtered.length}</strong> products</span>
+                          <span style={{ fontSize: 11, color: BLUE }}>{nameA}: <strong>{fmtNum(data.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
+                          <span style={{ fontSize: 11, color: STORE_B_COLOR }}>{nameB}: <strong>{fmtNum(compareData.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
+                        </div>
+                      </>
+                    )
+                  }
+                  // Single-store view
+                  const filtered = allProductSearch
+                    ? data.allProducts.filter(p => p.name.toLowerCase().includes(allProductSearch.toLowerCase()))
+                    : data.allProducts
+                  const maxUnits = data.allProducts[0]?.units || 1
+                  return (
+                    <>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto', paddingRight: 2 }}>
+                        {filtered.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '1rem 0' }}>No products found</p>}
+                        {filtered.map((p, i) => (
+                          <div key={i}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                              <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.name}</span>
+                              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS[i % COLORS.length], flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
+                            </div>
+                            <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                              <div style={{ background: COLORS[i % COLORS.length], height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <div style={{ background: '#e5e7eb', borderRadius: 4, height: 5 }}>
-                        <div style={{ background: COLORS[i % COLORS.length], height: '100%', borderRadius: 4, width: `${data.brands[0] ? Math.round(b.revenue / data.brands[0].revenue * 100) : 0}%` }} />
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.BORDER}`, display: 'flex', gap: 16 }}>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Showing <strong style={{ color: T.TEXT }}>{filtered.length}</strong> of <strong style={{ color: T.TEXT }}>{data.allProducts.length}</strong></span>
+                        <span style={{ fontSize: 11, color: T.MUTED }}>Total: <strong style={{ color: T.TEXT }}>{fmtNum(data.allProducts.reduce((s, p) => s + p.units, 0))} units</strong></span>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    </>
+                  )
+                })()}
               </Card>
 
-              <Card title="Customer gender">
-                <ResponsiveContainer width="100%" height={160}>
-                  <PieChart>
-                    <Pie data={data.genders} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={60}
-                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-                      {data.genders.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " />
-                  </PieChart>
-                </ResponsiveContainer>
-              </Card>
-
-              <Card title="Customer age group">
-                <ResponsiveContainer width="100%" height={160}>
-                  <BarChart data={data.ageGroups} margin={{ top: 0, right: 4, bottom: 30, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="name" tick={{ fontSize: 9, fill: T.MUTED }} angle={-30} textAnchor="end" />
-                    <YAxis tick={{ fontSize: 10, fill: T.MUTED }} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {data.ageGroups.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+              {/* Right: by salesman — comparison-aware */}
+              <Card
+                title="By salesman"
+                action={compareData ? (
+                  <div style={{ display: 'flex', gap: 2, background: '#e5e7eb', borderRadius: 8, padding: 2 }}>
+                    <button onClick={() => { setProdCountView('a'); setSelectedSalesman(null) }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: prodCountView === 'a' ? '#fff' : 'transparent', color: prodCountView === 'a' ? BLUE : T.MUTED, fontWeight: prodCountView === 'a' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameA}</button>
+                    <button onClick={() => { setProdCountView('b'); setSelectedSalesman(null) }} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: prodCountView === 'b' ? '#fff' : 'transparent', color: prodCountView === 'b' ? STORE_B_COLOR : T.MUTED, fontWeight: prodCountView === 'b' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameB}</button>
+                  </div>
+                ) : null}
+              >
+                {(() => {
+                  const pcData = (compareData && prodCountView === 'b') ? compareData : data
+                  const pcColor = (compareData && prodCountView === 'b') ? STORE_B_COLOR : BLUE
+                  return (
+                    <>
+                      <input
+                        placeholder="Search salesman..."
+                        value={salesmanSearch}
+                        onChange={e => { setSalesmanSearch(e.target.value); setSelectedSalesman(null) }}
+                        style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
+                      />
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+                        {pcData.salesmen.filter(s => !salesmanSearch || s.name.toLowerCase().includes(salesmanSearch.toLowerCase())).map((s, i) => (
+                          <button key={i} onClick={() => { setSelectedSalesman(selectedSalesman === s.name ? null : s.name); setSalesmanProductSearch('') }}
+                            style={{
+                              fontSize: 11, padding: '4px 12px', borderRadius: 20, cursor: 'pointer',
+                              border: `1px solid ${selectedSalesman === s.name ? pcColor : T.BORDER_STRONG}`,
+                              background: selectedSalesman === s.name ? pcColor : T.BG,
+                              color: selectedSalesman === s.name ? '#fff' : T.MUTED,
+                              fontWeight: selectedSalesman === s.name ? 600 : 400,
+                              transition: 'all 0.15s',
+                            }}>
+                            {s.name}
+                          </button>
+                        ))}
+                      </div>
+                      {(() => {
+                        const sm = pcData.salesmen.find(s => s.name === selectedSalesman)
+                        if (!selectedSalesman || !sm) return (
+                          <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '2rem 0' }}>Select a salesman to see their product breakdown</p>
+                        )
+                        const filteredProds = salesmanProductSearch
+                          ? sm.products.filter(p => p.product.toLowerCase().includes(salesmanProductSearch.toLowerCase()))
+                          : sm.products
+                        const maxUnits = sm.products[0]?.units || 1
+                        return (
+                          <>
+                            <div style={{ display: 'flex', gap: 12, marginBottom: 10, padding: '8px 10px', background: T.BG, borderRadius: 8 }}>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Orders: <strong style={{ color: T.TEXT }}>{fmtNum(sm.orders)}</strong></span>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Revenue: <strong style={{ color: pcColor }}>{fmtMYR(sm.revenue)}</strong></span>
+                              <span style={{ fontSize: 11, color: T.MUTED }}>Products: <strong style={{ color: T.TEXT }}>{sm.products.length}</strong></span>
+                            </div>
+                            <input
+                              placeholder="Search product..."
+                              value={salesmanProductSearch}
+                              onChange={e => setSalesmanProductSearch(e.target.value)}
+                              style={{ width: '100%', fontSize: 12, padding: '6px 10px', borderRadius: 8, border: `1px solid ${T.BORDER_STRONG}`, background: T.BG, color: T.TEXT, outline: 'none', marginBottom: 10 }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 220, overflowY: 'auto', paddingRight: 2 }}>
+                              {filteredProds.length === 0 && <p style={{ fontSize: 12, color: T.MUTED, textAlign: 'center', padding: '0.5rem 0' }}>No products found</p>}
+                              {filteredProds.map((p, j) => (
+                                <div key={j}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                                    <span style={{ fontSize: 11, color: T.TEXT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '68%' }}>{p.product}</span>
+                                    <span style={{ fontSize: 11, fontWeight: 600, color: pcColor, flexShrink: 0, marginLeft: 4 }}>{fmtNum(p.units)} units</span>
+                                  </div>
+                                  <div style={{ background: '#e5e7eb', borderRadius: 4, height: 4 }}>
+                                    <div style={{ background: pcColor, height: '100%', borderRadius: 4, width: `${Math.round(p.units / maxUnits * 100)}%`, transition: 'width 0.4s' }} />
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )
+                      })()}
+                    </>
+                  )
+                })()}
               </Card>
             </div>
 
@@ -1150,54 +2073,183 @@ export default function Dashboard() {
 
             {/* Traffic heatmap */}
             <SectionLabel>Traffic patterns</SectionLabel>
-            <Card title="Hour × day heatmap">
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginBottom: 12, fontSize: 11, color: T.MUTED }}>
-                <span>Low</span>
-                {[0.08,0.3,0.5,0.7,0.9].map(o => <div key={o} style={{ width: 14, height: 14, borderRadius: 2, background: o === 0.08 ? '#f1f5f9' : `rgba(37,99,235,${o})` }} />)}
-                <span>High</span>
-              </div>
-              <div style={{ overflowX: 'auto' }}>
-                <div style={{ minWidth: 560 }}>
-                  <div style={{ display: 'flex', marginBottom: 4, paddingLeft: 36 }}>
-                    {HOURS.filter(h => h % 3 === 0).map(h => (
-                      <div key={h} style={{ flex: '3 0 0', fontSize: 10, color: T.MUTED }}>{fmtHour(h)}</div>
-                    ))}
-                  </div>
-                  {data.heatmap.map((row, d) => (
-                    <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 2, marginBottom: 3 }}>
-                      <span style={{ width: 32, fontSize: 11, color: T.MUTED, flexShrink: 0 }}>{DAYS[d]}</span>
-                      {row.map((val, h) => <HeatmapCell key={h} value={val} max={heatmapMax} />)}
-                    </div>
-                  ))}
+            <Card
+              title="Hour × day heatmap"
+              action={compareData ? (
+                <div style={{ display: 'flex', gap: 2, background: '#e5e7eb', borderRadius: 8, padding: 2 }}>
+                  <button onClick={() => setHeatView('a')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: heatView === 'a' ? '#fff' : 'transparent', color: heatView === 'a' ? BLUE : T.MUTED, fontWeight: heatView === 'a' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameA}</button>
+                  <button onClick={() => setHeatView('b')} style={{ fontSize: 11, padding: '3px 10px', borderRadius: 6, border: 'none', background: heatView === 'b' ? '#fff' : 'transparent', color: heatView === 'b' ? STORE_B_COLOR : T.MUTED, fontWeight: heatView === 'b' ? 700 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{nameB}</button>
                 </div>
-              </div>
+              ) : null}
+            >
+              {(() => {
+                const activeHeatData = (compareData && heatView === 'b') ? compareData : data
+                const activeHeatColor = (compareData && heatView === 'b') ? STORE_B_COLOR : BLUE
+                const activeHeatMax = Math.max(...activeHeatData.heatmap.flat())
+                const hourTotals = HOURS.map(h => activeHeatData.heatmap.reduce((s, row) => s + row[h], 0))
+                const rowTotals = activeHeatData.heatmap.map(row => row.reduce((a, b) => a + b, 0))
+                const grandTotal = rowTotals.reduce((a, b) => a + b, 0)
+                const colMax = Math.max(...hourTotals)
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginBottom: 12, fontSize: 11, color: T.MUTED }}>
+                      <span>Low</span>
+                      {[0.08,0.3,0.5,0.7,0.9].map(o => {
+                        const [r,g,b] = activeHeatColor === STORE_B_COLOR ? [124,58,237] : [37,99,235]
+                        return <div key={o} style={{ width: 14, height: 14, borderRadius: 2, background: o === 0.08 ? '#f1f5f9' : `rgba(${r},${g},${b},${o})` }} />
+                      })}
+                      <span>High</span>
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <div style={{ minWidth: 600 }}>
+                        <div style={{ display: 'flex', marginBottom: 4, paddingLeft: 36 }}>
+                          {HOURS.filter(h => h % 3 === 0).map(h => (
+                            <div key={h} style={{ flex: '3 0 0', fontSize: 10, color: T.MUTED }}>{fmtHour(h)}</div>
+                          ))}
+                          <div style={{ width: 42, fontSize: 10, color: T.MUTED, textAlign: 'right', flexShrink: 0 }}>Total</div>
+                        </div>
+                        {activeHeatData.heatmap.map((row, d) => (
+                          <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 2, marginBottom: 3 }}>
+                            <span style={{ width: 32, fontSize: 11, color: T.MUTED, flexShrink: 0 }}>{DAYS[d]}</span>
+                            {row.map((val, h) => {
+                              const t = activeHeatMax > 0 ? val / activeHeatMax : 0
+                              const [r,g,b] = activeHeatColor === STORE_B_COLOR ? [124,58,237] : [37,99,235]
+                              return (
+                                <div key={h} title={`${Math.round(val)} orders`} style={{
+                                  flex: 1, height: 26, borderRadius: 2, minWidth: 0,
+                                  background: t === 0 ? '#f1f5f9' : `rgba(${r},${g},${b},${0.08 + t * 0.82})`,
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}>
+                                  {val > 0 && <span style={{ fontSize: 8, fontWeight: 600, lineHeight: 1, color: t > 0.55 ? '#fff' : '#475569', pointerEvents: 'none' }}>{Math.round(val)}</span>}
+                                </div>
+                              )
+                            })}
+                            <span style={{ width: 40, fontSize: 10, fontWeight: 600, color: activeHeatColor, textAlign: 'right', flexShrink: 0, paddingLeft: 4 }}>{rowTotals[d]}</span>
+                          </div>
+                        ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 2, marginTop: 4, borderTop: `1px solid ${T.BORDER}`, paddingTop: 4 }}>
+                          <span style={{ width: 32, fontSize: 10, color: T.MUTED, flexShrink: 0 }}>Total</span>
+                          {hourTotals.map((val, h) => <HeatmapCell key={h} value={val} max={colMax} isTotal />)}
+                          <span style={{ width: 40, fontSize: 10, fontWeight: 700, color: T.TEXT, textAlign: 'right', flexShrink: 0, paddingLeft: 4 }}>{grandTotal}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Traffic summary rows */}
+                    {(() => {
+                      const cells = []
+                      activeHeatData.heatmap.forEach((row, d) => row.forEach((v, h) => { if (v > 0) cells.push({ d, h, v }) }))
+                      cells.sort((a, b) => b.v - a.v)
+                      const top3 = cells.slice(0, 3)
+                      const slowSlot = cells.filter(c => c.h >= 10 && c.h <= 22).sort((a, b) => a.v - b.v)[0]
+                      const topDates = [...activeHeatData.trend].sort((a, b) => b.orders - a.orders).slice(0, 3)
+                      const wrNum = parseFloat(activeHeatData.weekendRatio)
+                      const isB = activeHeatColor === STORE_B_COLOR
+                      const accent = isB ? STORE_B_COLOR : BLUE
+                      const bg = isB ? '#faf5ff' : '#f8faff'
+                      const bdr = isB ? '#e9d5ff' : '#e0eaff'
+
+                      const weekendTag = !isNaN(wrNum)
+                        ? wrNum >= 1.2 ? { label: `${wrNum}× weekday avg`, color: GREEN }
+                          : wrNum <= 0.85 ? { label: `${wrNum}× (weekdays lead)`, color: ORANGE }
+                          : { label: `${wrNum}× (balanced)`, color: T.MUTED }
+                        : null
+
+                      const Row = ({ icon, label, children }) => (
+                        <div style={{ display: 'flex', gap: 12, padding: '10px 0', borderBottom: `1px solid ${bdr}` }}>
+                          <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>{icon}</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>{label}</div>
+                            <div style={{ fontSize: 13, color: T.TEXT, lineHeight: 1.5 }}>{children}</div>
+                          </div>
+                        </div>
+                      )
+
+                      return (
+                        <div style={{ marginTop: 16, background: bg, borderRadius: 12, border: `1px solid ${bdr}`, overflow: 'hidden' }}>
+                          <div style={{ padding: '10px 16px 0', borderBottom: `1px solid ${bdr}`, display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Traffic summary</span>
+                          </div>
+                          <div style={{ padding: '0 16px' }}>
+                            <Row icon="🔥" label="Peak hours">
+                              {top3.map((c, i) => (
+                                <span key={i}>
+                                  {i > 0 && <span style={{ color: T.MUTED, margin: '0 6px' }}>·</span>}
+                                  <strong>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h+1)}</strong>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} orders)</span>
+                                </span>
+                              ))}
+                            </Row>
+                            {weekendTag && (
+                              <Row icon="📅" label="Weekend vs weekday">
+                                Weekends bring <strong style={{ color: weekendTag.color }}>{weekendTag.label}</strong> —&nbsp;
+                                {wrNum >= 1.2 ? 'ideal for weekend promotions and extra staffing.'
+                                  : wrNum <= 0.85 ? 'focus weekday campaigns to drive more weekend footfall.'
+                                  : 'traffic is spread evenly throughout the week.'}
+                              </Row>
+                            )}
+                            {slowSlot && (
+                              <Row icon="😴" label="Slowest window">
+                                <strong>{DAYS[slowSlot.d]} {fmtHour(slowSlot.h)}–{fmtHour(slowSlot.h+1)}</strong>
+                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} order{slowSlot.v !== 1 ? 's' : ''})</span>
+                                <span style={{ color: T.MUTED }}> — use this gap for stock replenishment or team briefings.</span>
+                              </Row>
+                            )}
+                            <div style={{ display: 'flex', gap: 12, padding: '10px 0' }}>
+                              <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>📆</div>
+                              <div style={{ flex: 1 }}>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top trading dates</div>
+                                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                                  {topDates.map((d, i) => (
+                                    <div key={i} style={{ background: i === 0 ? accent : '#fff', border: `1px solid ${i === 0 ? accent : bdr}`, borderRadius: 8, padding: '5px 10px', fontSize: 12 }}>
+                                      <div style={{ fontWeight: 700, color: i === 0 ? '#fff' : T.TEXT }}>{d.fullDate || d.date}</div>
+                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </>
+                )
+              })()}
             </Card>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 12, marginTop: 12 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                {[
-                  ['🕐','Peak hour', `${fmtHour(data.peakHour)}–${fmtHour(data.peakHour+1)}`, `on ${DAYS[data.peakDay]}`],
-                  ['📅','Busiest day', DAYS[data.busiestDay], 'most orders'],
-                  ['🌙','Slowest slot', `${fmtHour(data.slowHour)} ${DAYS[data.slowDay]}`, 'quietest'],
-                  ['🗓️','Weekend lift', `${data.weekendRatio}×`, 'vs weekday avg'],
-                ].map(([icon, label, value, delta]) => (
-                  <KPI key={label} icon={icon} label={label} value={value} delta={delta} />
-                ))}
-              </div>
-              <Card title="Orders by day of week">
-                <ResponsiveContainer width="100%" height={180}>
-                  <BarChart data={data.dowTotals} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
-                    <XAxis dataKey="day" tick={{ fontSize: 12, fill: T.MUTED }} />
-                    <YAxis tick={{ fontSize: 11, fill: T.MUTED }} />
-                    <Tooltip contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
-                    <Bar dataKey="value" radius={[4,4,0,0]}>
-                      {data.dowTotals.map((d, i) => <Cell key={i} fill={d.value === dowMax ? BLUE : '#bfdbfe'} />)}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </Card>
-            </div>
+            {(() => {
+              const td = (compareData && heatView === 'b') ? compareData : data
+              const tdColor = (compareData && heatView === 'b') ? STORE_B_COLOR : BLUE
+              const tdDowMax = Math.max(...td.dowTotals.map(d => d.value))
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 12, marginTop: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    {[
+                      ['🕐','Peak hour', `${fmtHour(td.peakHour)}–${fmtHour(td.peakHour+1)}`, `on ${DAYS[td.peakDay]}`],
+                      ['📅','Busiest day', DAYS[td.busiestDay], 'most orders'],
+                      ['🌙','Slowest slot', `${fmtHour(td.slowHour)} ${DAYS[td.slowDay]}`, 'quietest'],
+                      ['🗓️','Weekend lift', `${td.weekendRatio}×`, 'vs weekday avg'],
+                    ].map(([icon, label, value, delta]) => (
+                      <KPI key={label} icon={icon} label={label} value={value} delta={delta} />
+                    ))}
+                  </div>
+                  <Card title="Orders by day of week">
+                    <ResponsiveContainer width="100%" height={180}>
+                      <BarChart data={td.dowTotals} margin={{ top: 0, right: 8, bottom: 0, left: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
+                        <XAxis dataKey="day" tick={{ fontSize: 12, fill: T.MUTED }} />
+                        <YAxis tick={{ fontSize: 11, fill: T.MUTED }} />
+                        <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
+                        <Bar dataKey="value" radius={[4,4,0,0]}>
+                          {td.dowTotals.map((d, i) => <Cell key={i} fill={d.value === tdDowMax ? tdColor : (tdColor === STORE_B_COLOR ? '#ddd6fe' : '#bfdbfe')} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </Card>
+                </div>
+              )
+            })()}
 
             <p style={{ textAlign: 'center', fontSize: 11, color: '#d1d5db', padding: '2rem 0 1rem' }}>
               StoreDash · built with React + Recharts
