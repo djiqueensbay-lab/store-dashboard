@@ -2285,7 +2285,7 @@ export default function Dashboard() {
                                 <span key={i}>
                                   {i > 0 && <span style={{ color: T.MUTED, margin: '0 6px' }}>·</span>}
                                   <strong>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h+1)}</strong>
-                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} orders)</span>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} sales)</span>
                                 </span>
                               ))}
                             </Row>
@@ -2300,19 +2300,19 @@ export default function Dashboard() {
                             {slowSlot && (
                               <Row icon="😴" label="Slowest window">
                                 <strong>{DAYS[slowSlot.d]} {fmtHour(slowSlot.h)}–{fmtHour(slowSlot.h+1)}</strong>
-                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} order{slowSlot.v !== 1 ? 's' : ''})</span>
+                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} sale{slowSlot.v !== 1 ? 's' : ''})</span>
                                 <span style={{ color: T.MUTED }}> — use this gap for stock replenishment or team briefings.</span>
                               </Row>
                             )}
                             <div style={{ display: 'flex', gap: 12, padding: '10px 0' }}>
                               <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>📆</div>
                               <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top trading dates</div>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top sales dates</div>
                                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                                   {topDates.map((d, i) => (
                                     <div key={i} style={{ background: i === 0 ? accent : '#fff', border: `1px solid ${i === 0 ? accent : bdr}`, borderRadius: 8, padding: '5px 10px', fontSize: 12 }}>
                                       <div style={{ fontWeight: 700, color: i === 0 ? '#fff' : T.TEXT }}>{d.fullDate || d.date}</div>
-                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</div>
+                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} sales · {fmtMYR(d.revenue)}</div>
                                     </div>
                                   ))}
                                 </div>
