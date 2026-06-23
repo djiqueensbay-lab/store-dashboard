@@ -61,12 +61,17 @@ function seedRandom(d, h) {
   return x - Math.floor(x)
 }
 
+const PTYPE_COLORS = { Drone: '#2563eb', Handheld: '#059669', Home: '#d97706', Power: '#7c3aed' }
+const PTYPES = ['Drone', 'Handheld', 'Home', 'Power']
+
 function classifyProductType(product) {
   const p = (product || '').toUpperCase()
-  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b/.test(p) ||
-      /\bDJI\s+AIR\b/.test(p)) return 'Drone'
-  if (/\bOSMO\b|\bRS\s*[C234]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b/.test(p)) return 'Handheld'
-  return 'Other'
+  if (/\bPOWER\b/.test(p)) return 'Power'
+  if (/\bSMART HOME\b|\bDOORBELL\b|\bHOME\s+SECURITY\b|\bO3\s+MODULE\b/.test(p)) return 'Home'
+  if (/\bMAVIC\b|\bMINI\b|\bPHANTOM\b|\bAVATA\b|\bFPV\b|\bAGRAS\b|\bNEO\b|\bFLIP\b|\bLITO\b/.test(p) ||
+      /\bDJI\s+AIR\b|\bAIR\s+\d/.test(p)) return 'Drone'
+  if (/\bOSMO\b|\bRS\s*[C2345]\b|\bRONIN\b|\bPOCKET\b|\bMIC\b|\bMOBILE\b/.test(p)) return 'Handheld'
+  return 'Drone'
 }
 
 function generateDemoData(seed = 0) {
@@ -120,6 +125,7 @@ function parsePOSFile(raw) {
     if (cell.startsWith('Report Time period')) meta.period = cell.replace('Report Time period :', '').trim()
     if (cell.startsWith('Outlets')) meta.outlet = cell.replace('Outlets :', '').trim()
     if (cell.startsWith('Total Transactions')) meta.totalTx = cell.replace('Total Transactions :', '').trim()
+    if (cell.startsWith('Total Sales')) meta.kassieTotal = parseFloat(cell.replace(/^Total Sales\s*:\s*\(MYR\)/, '').trim()) || null
     if (cell === 'Date') { headerIdx = i; break }
   }
   if (headerIdx === -1) return null
@@ -232,8 +238,8 @@ function processData(rows, meta = {}, dateRange = null) {
     brandOrders[brand] = (brandOrders[brand] || 0) + orders
     genderCount[gender] = (genderCount[gender] || 0) + 1
     ageOrders[age_group] = (ageOrders[age_group] || 0) + Math.abs(orders)
-    totalDiscount += discount
-    totalRSP += rsp * Math.abs(orders)
+    if (!isReturn) totalDiscount += discount
+    if (!isReturn) totalRSP += rsp * Math.abs(orders)
     totalRevenue += revenue
     totalOrders += Math.abs(orders)
 
@@ -276,7 +282,7 @@ function processData(rows, meta = {}, dateRange = null) {
   const returnRate = (totalOrders + returnCount) > 0 ? returnCount / (totalOrders + returnCount) * 100 : 0
 
   const categories = Object.entries(categoryRev).sort((a, b) => b[1] - a[1]).map(([name, revenue]) => ({ name, revenue: Math.round(revenue) }))
-  const productTypes = ['Drone', 'Handheld', 'Other']
+  const productTypes = PTYPES
     .map(name => ({ name, revenue: Math.round(productTypeRev[name] || 0), orders: productTypeOrders[name] || 0 }))
     .filter(p => p.revenue > 0)
   const topProducts = Object.entries(productRev).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, revenue]) => ({ name, revenue: Math.round(revenue), orders: productOrders[name] || 0 }))
@@ -351,7 +357,7 @@ function exportCSV(data, fileName) {
     ['Gross Revenue (MYR)', data.grossRevenue.toFixed(2)],
     ['Return Revenue (MYR)', data.returnRevenue.toFixed(2)],
     ['Net Revenue (MYR)', data.totalRevenue.toFixed(2)],
-    ['Total Orders', data.totalOrders],
+    ['Total Sales', data.totalOrders],
     ['Return Count', data.returnCount],
     ['Return Rate %', data.returnRate.toFixed(2)],
     ['Avg Order Value (MYR)', data.aov.toFixed(2)],
@@ -359,11 +365,11 @@ function exportCSV(data, fileName) {
     ['RSP Gap (MYR)', data.rspGap.toFixed(2)],
     [],
     ['TOP PRODUCTS'],
-    ['Product', 'Revenue (MYR)', 'Orders'],
+    ['Product', 'Revenue (MYR)', 'Sales'],
     ...data.topProducts.map(p => [p.name, p.revenue, p.orders]),
     [],
     ['SALESMEN'],
-    ['Salesman', 'Revenue (MYR)', 'Orders'],
+    ['Salesman', 'Revenue (MYR)', 'Sales'],
     ...data.salesmen.map(s => [s.name, s.revenue, s.orders]),
     [],
     ['CATEGORIES'],
@@ -379,7 +385,7 @@ function exportCSV(data, fileName) {
     ...data.monthlyBreakdown.map(m => [m.key, m.revenue]),
     [],
     ['DAILY TREND'],
-    ['Date', 'Revenue (MYR)', 'Orders'],
+    ['Date', 'Revenue (MYR)', 'Sales'],
     ...data.trend.map(t => [t.fullDate, t.revenue, t.orders]),
   ]
   const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
@@ -464,7 +470,7 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
     ['Net Revenue', fmtR(d.totalRevenue), color, `${d.growth >= 0 ? '+' : ''}${d.growth.toFixed(1)}% period trend`],
     ['Gross Revenue', fmtR(d.grossRevenue), '#111827', 'before returns'],
     ['Return Revenue', fmtR(d.returnRevenue), '#dc2626', `${d.returnCount} transactions`],
-    ['Total Orders', fmtN(d.totalOrders), '#111827', 'units sold'],
+    ['Total Sales', fmtN(d.totalOrders), '#111827', 'units sold'],
     ['Return Rate', d.returnRate.toFixed(1) + '%', d.returnRate < 5 ? '#059669' : '#dc2626', d.returnRate < 5 ? 'Healthy' : 'Monitor'],
     ['Avg Order Value', fmtR(d.aov), '#111827', 'per transaction'],
     ['Total Discount', fmtR(d.totalDiscount), '#d97706', `${d.totalRevenue > 0 ? ((d.totalDiscount / (d.totalRevenue + d.totalDiscount)) * 100).toFixed(1) : 0}% of gross`],
@@ -591,7 +597,7 @@ function exportPDF(data, compareData, nameA, nameB, periodLabel) {
       ['Net Revenue', data.totalRevenue, compareData.totalRevenue, fmtR],
       ['Gross Revenue', data.grossRevenue, compareData.grossRevenue, fmtR],
       ['Return Revenue', data.returnRevenue, compareData.returnRevenue, fmtR],
-      ['Total Orders', data.totalOrders, compareData.totalOrders, fmtN],
+      ['Total Sales', data.totalOrders, compareData.totalOrders, fmtN],
       ['Avg Order Value', data.aov, compareData.aov, fmtR],
       ['Return Rate (%)', data.returnRate, compareData.returnRate, v => v.toFixed(1) + '%'],
       ['Total Discount', data.totalDiscount, compareData.totalDiscount, fmtR],
@@ -976,6 +982,9 @@ export default function Dashboard() {
   const [targets, setTargets] = useState(() => {
     try { return JSON.parse(localStorage.getItem('storedash-targets') || '{}') } catch { return {} }
   })
+  const [uploadHistory, setUploadHistory] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('storedash-history') || '[]') } catch { return [] }
+  })
   const [editingTargets, setEditingTargets] = useState(false)
   const [allProductSearch, setAllProductSearch] = useState('')
   const [selectedSalesman, setSelectedSalesman] = useState(null)
@@ -987,6 +996,7 @@ export default function Dashboard() {
   const [draggingB, setDraggingB] = useState(false)
   const fileRef = useRef()
   const compareFileRef = useRef()
+  const fileCacheRef = useRef({})
 
   const data = useMemo(() => rawData ? processData(rawData.rows, rawData.meta, dateRange) : null, [rawData, dateRange])
   const compareData = useMemo(() => rawCompareData ? processData(rawCompareData.rows, rawCompareData.meta, dateRange) : null, [rawCompareData, dateRange])
@@ -994,7 +1004,23 @@ export default function Dashboard() {
   const handleFile = useCallback(file => {
     if (!file) return
     setError(null); setFileName(file.name)
-    parseFile(file, setRawData, setError)
+    parseFile(file, parsed => {
+      fileCacheRef.current[file.name] = parsed
+      setRawData(parsed)
+      const entry = {
+        filename: file.name,
+        outlet: parsed.meta?.outlet || '',
+        period: parsed.meta?.period || '',
+        kassieTotal: parsed.meta?.kassieTotal || null,
+        totalTx: parsed.meta?.totalTx || null,
+        uploadedAt: new Date().toISOString(),
+      }
+      setUploadHistory(prev => {
+        const next = [entry, ...prev.filter(h => h.filename !== file.name)].slice(0, 5)
+        localStorage.setItem('storedash-history', JSON.stringify(next))
+        return next
+      })
+    }, setError)
   }, [])
 
   const handleCompareFile = useCallback(file => {
@@ -1113,7 +1139,7 @@ export default function Dashboard() {
       .sort((a, b) => (b.unitsA + b.unitsB) - (a.unitsA + a.unitsB))
   })()
 
-  const productTypeComparison = compareData ? ['Drone', 'Handheld', 'Other'].map(name => {
+  const productTypeComparison = compareData ? PTYPES.map(name => {
     const a = data?.productTypes.find(p => p.name === name)
     const b = compareData.productTypes.find(p => p.name === name)
     return { name, storeA: a?.revenue || 0, storeB: b?.revenue || 0, ordersA: a?.orders || 0, ordersB: b?.orders || 0 }
@@ -1131,10 +1157,15 @@ export default function Dashboard() {
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
         boxShadow: '0 1px 4px rgba(0,0,0,0.07)',
       }}>
-        {/* Left: brand */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+        {/* Left: brand / home */}
+        <div
+          onClick={data ? resetAll : undefined}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, cursor: data ? 'pointer' : 'default', borderRadius: 8, padding: '2px 4px', transition: 'background 0.15s' }}
+          title={data ? 'Go to Home' : ''}
+        >
           <div style={{ width: 30, height: 30, borderRadius: 8, background: BLUE, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }}>📊</div>
           <span style={{ fontWeight: 800, fontSize: 15, color: BLUE, letterSpacing: '-0.01em' }}>StoreDash</span>
+          {data && <span style={{ fontSize: 10, color: T.MUTED, marginLeft: -2 }}>⌂</span>}
         </div>
 
         {/* Center: store context */}
@@ -1233,8 +1264,10 @@ export default function Dashboard() {
           <>
             <div style={{ marginBottom: '1.5rem' }}>
               <h1 style={{ fontSize: 26, fontWeight: 700, margin: '0 0 6px', color: T.TEXT }}>Store Dashboard</h1>
-              <p style={{ color: T.MUTED, fontSize: 14 }}>Drop your CustomerPurchaseListing CSV to get started</p>
+              <p style={{ color: T.MUTED, fontSize: 14 }}>Upload your Kassie Customer Purchase Listing CSV to analyse sales</p>
             </div>
+
+            {/* Drop zone */}
             <div
               onDragOver={e => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
@@ -1242,28 +1275,97 @@ export default function Dashboard() {
               onClick={() => fileRef.current.click()}
               style={{
                 border: `2px dashed ${dragging ? BLUE : T.BORDER_STRONG}`,
-                borderRadius: 16, padding: '4rem 2rem', textAlign: 'center', cursor: 'pointer',
+                borderRadius: 16, padding: '3rem 2rem', textAlign: 'center', cursor: 'pointer',
                 background: dragging ? '#eff6ff' : T.CARD,
-                transition: 'all 0.2s', marginBottom: '1.5rem',
+                transition: 'all 0.2s', marginBottom: '1rem',
                 boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
               }}
             >
               <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
-              <div style={{ fontSize: 44, marginBottom: 14 }}>📂</div>
-              <p style={{ fontWeight: 600, fontSize: 16, margin: '0 0 6px', color: T.TEXT }}>Drop your CSV file here</p>
-              <p style={{ color: T.MUTED, fontSize: 13, margin: '0 0 1.5rem' }}>or click to browse</p>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>📂</div>
+              <p style={{ fontWeight: 600, fontSize: 16, margin: '0 0 4px', color: T.TEXT }}>Drop your CSV file here</p>
+              <p style={{ color: T.MUTED, fontSize: 13, margin: '0 0 1.25rem' }}>or click to browse</p>
               <button onClick={e => { e.stopPropagation(); loadDemo() }}
                 style={{ padding: '9px 22px', borderRadius: 9, cursor: 'pointer', fontSize: 13, border: `1px solid ${BLUE}`, background: '#eff6ff', color: BLUE, fontWeight: 600 }}>
                 ✨ Try with demo data
               </button>
             </div>
+
+            {/* Kassie export tip */}
+            <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 12, padding: '12px 16px', marginBottom: '1rem', display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>💡</span>
+              <div>
+                <p style={{ fontWeight: 600, fontSize: 13, color: '#92400e', margin: '0 0 4px' }}>Kassie Export Tip — to match Branch/Outlet Net Sales</p>
+                <p style={{ fontSize: 12, color: '#78350f', margin: '0 0 4px' }}>Go to <strong>Customer Report → Customer Purchase Listing</strong>, then:</p>
+                <p style={{ fontSize: 12, color: '#78350f', margin: 0 }}>
+                  ☑ Uncheck <strong>"Display invoices with registered Customer Only"</strong> — this includes walk-in sales that are missing otherwise
+                </p>
+              </div>
+            </div>
+
+            {/* Recent history */}
+            {uploadHistory.length > 0 && (
+              <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: '1rem 1.25rem', marginBottom: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <p style={{ fontWeight: 600, fontSize: 13, margin: 0, color: T.TEXT }}>🕐 Recent uploads</p>
+                  <button onClick={() => { setUploadHistory([]); localStorage.removeItem('storedash-history') }}
+                    style={{ fontSize: 11, color: T.MUTED, background: 'none', border: 'none', cursor: 'pointer', padding: '2px 6px', borderRadius: 4 }}>
+                    Clear all
+                  </button>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {uploadHistory.map((h, i) => {
+                    const cached = !!fileCacheRef.current[h.filename]
+                    const ago = (() => {
+                      const diff = Math.floor((Date.now() - new Date(h.uploadedAt)) / 1000)
+                      if (diff < 60) return 'just now'
+                      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+                      if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+                      return `${Math.floor(diff / 86400)}d ago`
+                    })()
+                    return (
+                      <div key={i}
+                        onClick={() => {
+                          if (cached) {
+                            setRawData(fileCacheRef.current[h.filename])
+                            setFileName(h.filename)
+                          } else {
+                            fileRef.current.click()
+                          }
+                        }}
+                        style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: T.BG, borderRadius: 8, border: `1px solid ${T.BORDER}`, cursor: 'pointer', transition: 'background 0.15s' }}
+                        onMouseEnter={e => e.currentTarget.style.background = '#f0f4ff'}
+                        onMouseLeave={e => e.currentTarget.style.background = T.BG}
+                      >
+                        <span style={{ fontSize: 16 }}>{cached ? '📂' : '📄'}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <p style={{ fontSize: 12, fontWeight: 600, color: T.TEXT, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.filename}</p>
+                          <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>
+                            {h.outlet && <span>{h.outlet} · </span>}
+                            {h.period && <span>{h.period} · </span>}
+                            {h.totalTx && <span>{h.totalTx} tx</span>}
+                            {cached && <span style={{ color: GREEN }}> · Click to reload</span>}
+                          </p>
+                        </div>
+                        {h.kassieTotal != null && (
+                          <span style={{ fontSize: 12, fontWeight: 700, color: GREEN, whiteSpace: 'nowrap' }}>{fmtMYRAbbr(h.kassieTotal)}</span>
+                        )}
+                        <span style={{ fontSize: 11, color: T.MUTED, whiteSpace: 'nowrap' }}>{ago}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Supported formats */}
             <div style={{ background: T.CARD, border: `1px solid ${T.BORDER}`, borderRadius: 12, padding: '1rem 1.25rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
               <p style={{ fontWeight: 600, fontSize: 13, margin: '0 0 4px', color: T.TEXT }}>Supported formats</p>
               <p style={{ fontSize: 12, color: T.MUTED, margin: '0 0 12px' }}>Auto-detected — just drop the file</p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ background: T.BG, border: `1px solid ${T.BORDER}`, borderRadius: 8, padding: '10px 12px', flex: 1 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: BLUE, margin: '0 0 4px' }}>POS Report (CustomerPurchaseListing)</p>
-                  <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>Your store export — works as-is, metadata rows auto-skipped</p>
+                  <p style={{ fontSize: 11, color: T.MUTED, margin: 0 }}>Your Kassie export — metadata rows auto-skipped</p>
                 </div>
                 <div style={{ background: T.BG, border: `1px solid ${T.BORDER}`, borderRadius: 8, padding: '10px 12px', flex: 1 }}>
                   <p style={{ fontSize: 12, fontWeight: 600, color: T.MUTED, margin: '0 0 4px' }}>Simple CSV</p>
@@ -1289,6 +1391,13 @@ export default function Dashboard() {
                 {data.meta.period && <span style={{ fontSize: 12, color: '#3b82f6' }}>📅 {data.meta.period}</span>}
                 {data.meta.generated && <span style={{ fontSize: 12, color: T.MUTED }}>🕐 Generated: {data.meta.generated}</span>}
                 {data.meta.totalTx && <span style={{ fontSize: 12, color: T.MUTED }}>🧾 {data.meta.totalTx} transactions</span>}
+                {data.meta.kassieTotal != null && !dateRange && (
+                  <span style={{ fontSize: 12, color: Math.abs(data.totalRevenue - data.meta.kassieTotal) < 1 ? '#059669' : '#d97706', fontWeight: 600 }}>
+                    {Math.abs(data.totalRevenue - data.meta.kassieTotal) < 1
+                      ? `✓ Kassie total matches: ${fmtMYR(data.meta.kassieTotal)}`
+                      : `⚠ Kassie declares ${fmtMYR(data.meta.kassieTotal)} · StoreDash shows ${fmtMYR(data.totalRevenue)}`}
+                  </span>
+                )}
               </div>
             )}
 
@@ -1507,7 +1616,7 @@ export default function Dashboard() {
               <KPI icon="💰" label="Net revenue" value={fmtMYR(data.totalRevenue)}
                 delta={`${data.growth >= 0 ? '+' : ''}${data.growth.toFixed(1)}% trend`}
                 color={data.growth >= 0 ? '#16a34a' : '#dc2626'} />
-              <KPI icon="🛒" label="Total orders" value={fmtNum(data.totalOrders)} delta="units sold" />
+              <KPI icon="🛒" label="Total sales" value={fmtNum(data.totalOrders)} delta="units sold" />
               <KPI icon="🧾" label="Avg order value" value={fmtMYR(data.aov)} delta="per transaction" />
               <KPI icon="🏷️" label="Total discounts" value={fmtMYR(data.totalDiscount)}
                 delta={data.totalRevenue > 0 ? `${((data.totalDiscount / (data.totalRevenue + data.totalDiscount)) * 100).toFixed(1)}% of gross` : ''} color={ORANGE} />
@@ -1721,7 +1830,7 @@ export default function Dashboard() {
                         formatter={(v, key) => key === 'revenue' ? [fmtMYR(v), 'Revenue'] : [fmtNum(v), 'Units sold']} />
                       <Bar dataKey="revenue" radius={[4,4,0,0]}>
                         {data.productTypes.map((pt, i) => (
-                          <Cell key={i} fill={pt.name === 'Drone' ? BLUE : pt.name === 'Handheld' ? GREEN : '#94a3b8'} />
+                          <Cell key={i} fill={PTYPE_COLORS[pt.name] || '#94a3b8'} />
                         ))}
                       </Bar>
                     </BarChart>
@@ -1733,12 +1842,12 @@ export default function Dashboard() {
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: BLUE }} />{nameA}</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}><div style={{ width: 8, height: 8, borderRadius: 2, background: STORE_B_COLOR }} />{nameB}</div>
                     </>
-                  ) : [{ color: BLUE, name: 'Drone' }, { color: GREEN, name: 'Handheld' }, { color: '#94a3b8', name: 'Other' }].map(t => {
-                    const pt = data.productTypes.find(p => p.name === t.name)
+                  ) : PTYPES.map(name => {
+                    const pt = data.productTypes.find(p => p.name === name)
                     return pt ? (
-                      <div key={t.name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
-                        <div style={{ width: 8, height: 8, borderRadius: 2, background: t.color }} />
-                        {t.name} · {fmtNum(pt.orders)} units
+                      <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: T.MUTED }}>
+                        <div style={{ width: 8, height: 8, borderRadius: 2, background: PTYPE_COLORS[name] || '#94a3b8' }} />
+                        {name} · {fmtNum(pt.orders)} units
                       </div>
                     ) : null
                   })}
@@ -2176,7 +2285,7 @@ export default function Dashboard() {
                                 <span key={i}>
                                   {i > 0 && <span style={{ color: T.MUTED, margin: '0 6px' }}>·</span>}
                                   <strong>{DAYS[c.d]} {fmtHour(c.h)}–{fmtHour(c.h+1)}</strong>
-                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} orders)</span>
+                                  <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({c.v} sales)</span>
                                 </span>
                               ))}
                             </Row>
@@ -2191,19 +2300,19 @@ export default function Dashboard() {
                             {slowSlot && (
                               <Row icon="😴" label="Slowest window">
                                 <strong>{DAYS[slowSlot.d]} {fmtHour(slowSlot.h)}–{fmtHour(slowSlot.h+1)}</strong>
-                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} order{slowSlot.v !== 1 ? 's' : ''})</span>
+                                <span style={{ fontSize: 11, color: T.MUTED, marginLeft: 4 }}>({slowSlot.v} sale{slowSlot.v !== 1 ? 's' : ''})</span>
                                 <span style={{ color: T.MUTED }}> — use this gap for stock replenishment or team briefings.</span>
                               </Row>
                             )}
                             <div style={{ display: 'flex', gap: 12, padding: '10px 0' }}>
                               <div style={{ width: 28, height: 28, borderRadius: 8, background: `${accent}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, flexShrink: 0, marginTop: 1 }}>📆</div>
                               <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top trading dates</div>
+                                <div style={{ fontSize: 10, fontWeight: 700, color: accent, textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 6 }}>Top sales dates</div>
                                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                                   {topDates.map((d, i) => (
                                     <div key={i} style={{ background: i === 0 ? accent : '#fff', border: `1px solid ${i === 0 ? accent : bdr}`, borderRadius: 8, padding: '5px 10px', fontSize: 12 }}>
                                       <div style={{ fontWeight: 700, color: i === 0 ? '#fff' : T.TEXT }}>{d.fullDate || d.date}</div>
-                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} orders · {fmtMYR(d.revenue)}</div>
+                                      <div style={{ fontSize: 11, color: i === 0 ? 'rgba(255,255,255,0.8)' : T.MUTED, marginTop: 1 }}>{Math.abs(d.orders)} sales · {fmtMYR(d.revenue)}</div>
                                     </div>
                                   ))}
                                 </div>
@@ -2240,7 +2349,7 @@ export default function Dashboard() {
                         <CartesianGrid strokeDasharray="3 3" stroke={T.GRID} />
                         <XAxis dataKey="day" tick={{ fontSize: 12, fill: T.MUTED }} />
                         <YAxis tick={{ fontSize: 11, fill: T.MUTED }} />
-                        <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Orders']} />
+                        <Tooltip {...TS} contentStyle={TT} cursor={TC} separator=": " formatter={v => [fmtNum(v), 'Sales']} />
                         <Bar dataKey="value" radius={[4,4,0,0]}>
                           {td.dowTotals.map((d, i) => <Cell key={i} fill={d.value === tdDowMax ? tdColor : (tdColor === STORE_B_COLOR ? '#ddd6fe' : '#bfdbfe')} />)}
                         </Bar>
